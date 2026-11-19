@@ -13,7 +13,8 @@ import { downloadFileSecure, getTelegramFileUrl } from '../../utils/download.js'
 import { telegramProxyUrl } from '../../telegram/client-options.js';
 import { sanitizeError } from '../../utils/sanitize.js';
 import { isValidImageFile, getFileType } from '../../utils/file-type.js';
-import { type PhotoSize } from 'grammy/types';
+import { type Document, type PhotoSize } from 'grammy/types';
+import type { ImageAttachment } from '../../providers/types.js';
 import { getSessionKeyFromCtx } from '../../utils/session-key.js';
 import { requireSession } from './session-guard.js';
 import { progressCallbacks, withStreamingTurn } from '../../telegram/streaming-turn.js';
@@ -23,7 +24,7 @@ function sanitizeFileName(name: string): string {
   return path.basename(name).replace(/[^a-zA-Z0-9._-]/g, '_');
 }
 
-function pickLargestPhoto(photoSizes: PhotoSize[]): PhotoSize {
+export function pickLargestPhoto(photoSizes: PhotoSize[]): PhotoSize {
   return photoSizes.reduce((best, current) => {
     const bestSize = best.file_size || 0;
     const currentSize = current.file_size || 0;
@@ -77,15 +78,26 @@ async function handleSavedImage(
   ];
 
   const agentPrompt = noteLines.join('\n');
+  await runUploadTurn(ctx, sessionKey, agentPrompt, [imageAttachment(savedPath)]);
+}
 
+/** A saved image as vision input for the turn. */
+export function imageAttachment(savedPath: string): ImageAttachment {
   // Read image as base64 for multimodal vision input
-  const imageBase64 = fs.readFileSync(savedPath).toString('base64');
-  const mediaType = getMediaType(savedPath);
-  // savedPath is what the note above names in "Saved at:", and naming it is
+  const data = fs.readFileSync(savedPath).toString('base64');
+  // savedPath is what the prompt names in "Saved at:", and naming it is
   // what makes claude attach it — so hand the provider that same
   // path rather than letting it stage a duplicate copy of the same picture.
-  const images = [{ data: imageBase64, mediaType, path: savedPath }];
+  return { data, mediaType: getMediaType(savedPath), path: savedPath };
+}
 
+/** Send the note an upload became to Claude as a turn, behind any turn already running. */
+export async function runUploadTurn(
+  ctx: Context,
+  sessionKey: string,
+  agentPrompt: string,
+  images?: ImageAttachment[],
+): Promise<void> {
   await queueRequest(sessionKey, agentPrompt, async () => {
     const startTime = Date.now();
 
@@ -103,6 +115,88 @@ async function handleSavedImage(
       await closeTurn(ctx, sessionKey, response, agentPrompt);
     });
   });
+}
+
+/** Drop a download that turned out not to be an image, and say so. */
+function requireValidImage(destPath: string): void {
+  // Validate file content via magic bytes (defense against spoofed MIME types)
+  let isValid = false;
+  try {
+    isValid = isValidImageFile(destPath);
+  } catch {
+    // Validation threw — treat as invalid
+  }
+  if (!isValid) {
+    if (fs.existsSync(destPath)) fs.unlinkSync(destPath);
+    throw new Error('Downloaded file is not a valid image.');
+  }
+  if (!fs.readFileSync(destPath).length) {
+    throw new Error('Downloaded image is empty.');
+  }
+}
+
+/**
+ * Save a photo under `uploadsDir` and return where it went. `stamp` starts the
+ * file name, so photos saved together can be told apart.
+ */
+export async function savePhoto(
+  ctx: Context,
+  uploadsDir: string,
+  photo: PhotoSize,
+  stamp: string = String(Date.now()),
+): Promise<string> {
+  const safeUniqueId = sanitizeFileName(photo.file_unique_id);
+  const destPath = path.join(uploadsDir, `photo_${stamp}_${safeUniqueId}.jpg`);
+
+  const filePath = await downloadTelegramFile(ctx, photo.file_id, destPath);
+  requireValidImage(destPath);
+
+  // Get actual file type from magic bytes instead of trusting extension
+  const actualType = getFileType(destPath);
+  const rawExt = actualType?.extension || path.extname(filePath) || '.jpg';
+  const ext = rawExt.startsWith('.') ? rawExt : `.${rawExt}`;
+  const finalPath = ext && ext !== '.jpg'
+    ? destPath.replace(/\.jpg$/, ext)
+    : destPath;
+
+  if (finalPath !== destPath) {
+    fs.renameSync(destPath, finalPath);
+  }
+  return finalPath;
+}
+
+/** Save an image sent as a file under `uploadsDir` and return where it went. */
+export async function saveImageDocument(
+  ctx: Context,
+  uploadsDir: string,
+  document: Document,
+  stamp: string = String(Date.now()),
+): Promise<string> {
+  const originalName = document.file_name ? sanitizeFileName(document.file_name) : '';
+  const ext = originalName.includes('.') ? '' : '.jpg';
+  const baseName = originalName || `image_${stamp}_${document.file_unique_id}${ext}`;
+  const destPath = path.join(uploadsDir, `${stamp}_${baseName}`);
+
+  await downloadTelegramFile(ctx, document.file_id, destPath);
+  requireValidImage(destPath);
+  return destPath;
+}
+
+/** Save any other file under `uploadsDir` and return where it went. */
+export async function saveDocument(
+  ctx: Context,
+  uploadsDir: string,
+  document: Document,
+  stamp: string = String(Date.now()),
+): Promise<string> {
+  const originalName = document.file_name ? sanitizeFileName(document.file_name) : `file_${document.file_unique_id}`;
+  const destPath = path.join(uploadsDir, `${stamp}_${originalName}`);
+
+  await downloadTelegramFile(ctx, document.file_id, destPath);
+  if (!fs.existsSync(destPath) || fs.statSync(destPath).size === 0) {
+    throw new Error('Downloaded document is empty.');
+  }
+  return destPath;
 }
 
 export async function handlePhoto(ctx: Context): Promise<void> {
@@ -139,43 +233,9 @@ export async function handlePhoto(ctx: Context): Promise<void> {
   }
 
   const uploadsDir = ensureUploadsDir(session.workingDirectory);
-  const timestamp = Date.now();
-  const safeUniqueId = sanitizeFileName(largest.file_unique_id);
-  const fallbackName = `photo_${timestamp}_${safeUniqueId}.jpg`;
-  const destPath = path.join(uploadsDir, fallbackName);
 
   try {
-    const filePath = await downloadTelegramFile(ctx, largest.file_id, destPath);
-
-    // Validate file content via magic bytes (defense against spoofed MIME types)
-    let isValid = false;
-    try {
-      isValid = isValidImageFile(destPath);
-    } catch {
-      // Validation threw — treat as invalid
-    }
-    if (!isValid) {
-      if (fs.existsSync(destPath)) fs.unlinkSync(destPath);
-      throw new Error('Downloaded file is not a valid image.');
-    }
-
-    // Get actual file type from magic bytes instead of trusting extension
-    const actualType = getFileType(destPath);
-    const rawExt = actualType?.extension || path.extname(filePath) || '.jpg';
-    const ext = rawExt.startsWith('.') ? rawExt : `.${rawExt}`;
-    const finalPath = ext && ext !== '.jpg'
-      ? destPath.replace(/\.jpg$/, ext)
-      : destPath;
-
-    if (finalPath !== destPath) {
-      fs.renameSync(destPath, finalPath);
-    }
-
-    const buffer = fs.readFileSync(finalPath);
-    if (!buffer.length) {
-      throw new Error('Downloaded image is empty.');
-    }
-
+    const finalPath = await savePhoto(ctx, uploadsDir, largest);
     await handleSavedImage(ctx, finalPath, ctx.message?.caption);
   } catch (error) {
     const errorMessage = sanitizeError(error);
@@ -221,15 +281,10 @@ export async function handleTextDocument(ctx: Context): Promise<void> {
   }
 
   const uploadsDir = ensureUploadsDir(session.workingDirectory);
-  const timestamp = Date.now();
   const originalName = document.file_name ? sanitizeFileName(document.file_name) : `file_${document.file_unique_id}`;
-  const destPath = path.join(uploadsDir, `${timestamp}_${originalName}`);
 
   try {
-    await downloadTelegramFile(ctx, document.file_id, destPath);
-    if (!fs.existsSync(destPath) || fs.statSync(destPath).size === 0) {
-      throw new Error('Downloaded document is empty.');
-    }
+    const destPath = await saveDocument(ctx, uploadsDir, document);
 
     const caption = ctx.message?.caption?.trim();
     const noteLines = [
@@ -240,22 +295,7 @@ export async function handleTextDocument(ctx: Context): Promise<void> {
       'If the caption asks a question, answer it based on the file. Otherwise summarize the contents and ask if they want a specific analysis.',
     ];
     const agentPrompt = noteLines.join('\n');
-
-    await queueRequest(sessionKey, agentPrompt, async () => {
-      const startTime = Date.now();
-
-      await withStreamingTurn(ctx, sessionKey, agentPrompt, async (abortController) => {
-        const response = await sendToAgent(sessionKey, agentPrompt, {
-          ...progressCallbacks(ctx),
-          abortController,
-          telegramCtx: ctx,
-        });
-        await messageSender.finishStreaming(ctx, response.text);
-        await relayCatchUpIfMissed(ctx, sessionKey, response.text || '');
-        await messageSender.sendCompletionNotification(ctx, Date.now() - startTime);
-        await closeTurn(ctx, sessionKey, response, agentPrompt);
-      });
-    });
+    await runUploadTurn(ctx, sessionKey, agentPrompt);
   } catch (error) {
     const errorMessage = sanitizeError(error);
     console.error('[Doc] Error:', errorMessage);
@@ -301,32 +341,9 @@ export async function handleImageDocument(ctx: Context): Promise<void> {
   }
 
   const uploadsDir = ensureUploadsDir(session.workingDirectory);
-  const timestamp = Date.now();
-  const originalName = document.file_name ? sanitizeFileName(document.file_name) : '';
-  const ext = originalName.includes('.') ? '' : '.jpg';
-  const baseName = originalName || `image_${timestamp}_${document.file_unique_id}${ext}`;
-  const destPath = path.join(uploadsDir, `${timestamp}_${baseName}`);
 
   try {
-    await downloadTelegramFile(ctx, document.file_id, destPath);
-
-    // Validate file content via magic bytes (defense against spoofed MIME types)
-    let isValid = false;
-    try {
-      isValid = isValidImageFile(destPath);
-    } catch {
-      // Validation threw — treat as invalid
-    }
-    if (!isValid) {
-      if (fs.existsSync(destPath)) fs.unlinkSync(destPath);
-      throw new Error('Downloaded file is not a valid image.');
-    }
-
-    const buffer = fs.readFileSync(destPath);
-    if (!buffer.length) {
-      throw new Error('Downloaded image is empty.');
-    }
-
+    const destPath = await saveImageDocument(ctx, uploadsDir, document);
     await handleSavedImage(ctx, destPath, ctx.message?.caption);
   } catch (error) {
     const errorMessage = sanitizeError(error);

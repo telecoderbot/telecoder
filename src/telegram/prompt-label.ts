@@ -28,9 +28,10 @@ import { userTextKind } from '../claude/session-jsonl.js';
 const UPLOAD_CHIPS = /^(?:\[(?:Image|Pasted text) #\d+(?: \+\d+ lines)?\]\s*)+/;
 const IMAGE_NOTE = /^User (?:sent an image\.|uploaded an image to the project\.)$/;
 const FILE_NOTE = /^User (?:sent|uploaded) a file: (.+)$/;
+const ALBUM_NOTE = /^User sent (\d+) files together\.$/;
 // The line each handler puts directly after the caption — the caption itself
 // is a user-supplied string that may run over several lines.
-const AFTER_CAPTION = /^(?:The image is attached as a vision input|Use the Read tool to read its contents)/;
+const AFTER_CAPTION = /^(?:The images? (?:is|are) attached as (?:a )?vision input|Use the Read tool to read (?:its|their) contents)/;
 
 function uploadCaption(lines: string[]): string | undefined {
   const start = lines.findIndex((l) => l.startsWith('Caption: '));
@@ -58,7 +59,9 @@ export function summarizeUserPrompt(text: string): string {
     label = '📷 Image';
   } else {
     const named = FILE_NOTE.exec(first);
+    const album = ALBUM_NOTE.exec(first);
     if (named) label = `📎 ${named[1]!.trim()}`;
+    else if (album) label = `📎 ${album[1]} files`;
   }
   if (!label) return text;
 

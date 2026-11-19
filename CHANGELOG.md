@@ -7,6 +7,14 @@ reasoning — the commit bodies are the long form, this is the index.
 
 ### Added
 
+- **Files sent together reach Claude as one message.** Telegram delivers
+  files picked together one message each, with the caption on just one, so
+  each became a turn of its own: an answer per file, none knowing about the
+  others, and all but one without the caption. The bot now gathers the parts
+  of an album and sends them as one prompt, images attached and the rest named
+  for Read. A part it can't take, such as a video, is listed and the rest
+  still go.
+
 - **`telecoder watch` shows the live Claude Code screen behind a chat.** Each
   chat has a real `claude` in a pty, whose screen existed only inside the
   bot. Now the bot serves it read-only on an owner-only socket in

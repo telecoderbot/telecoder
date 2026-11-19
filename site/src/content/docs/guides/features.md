@@ -150,6 +150,8 @@ Everything TeleCoder does, by area. Commands are listed in full in [Commands](..
 
 - Send photos, image documents or files; they're saved under `~/.telecoder/uploads/`, outside
   the project, and Claude gets the path
+- Files sent together (Telegram's "Group items") reach Claude as one message, with the
+  caption, so it answers them together instead of once per file
 - `/file <path>` sends you a file from the project, or ask Claude to send it. Either way,
   credential files such as `.env` and `~/.ssh` are never sent, and a guest only gets files
   from the chat's project

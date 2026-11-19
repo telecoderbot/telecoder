@@ -95,6 +95,8 @@ import {
   handleUnsupportedMediaDocument,
 } from './handlers/media-fallback.js';
 import { createBatchMiddleware } from './middleware/message-batcher.js';
+import { albumParts, createAlbumMiddleware } from './middleware/album-collector.js';
+import { handleAlbum } from './handlers/album.handler.js';
 import { countUpdatesInFlight } from '../restart-when-idle.js';
 import {
   resolvePendingQuestion,
@@ -300,6 +302,10 @@ export async function createBot(botInfo?: UserFromGetMe): Promise<Bot> {
   // A project bot made by /newbot starts without threads, which only its owner
   // can turn on: tell them how, with the first message they send it.
   initThreadsSetup(bot);
+
+  // Files sent together arrive one message each: gather them into one. Ahead of
+  // the mention gate, which reads the caption only one of them carries.
+  bot.use(createAlbumMiddleware());
 
   // In groups, ignore messages that aren't addressed to the bot, so people can
   // talk to each other without triggering a turn. Runs before the command
@@ -581,6 +587,10 @@ export async function createBot(botInfo?: UserFromGetMe): Promise<Bot> {
   // The bot a /newbot button created. The handler checks for an admin itself,
   // and quietly: anyone with a t.me/newbot link can create one.
   bot.on('message:managed_bot_created', handleManagedBotCreated);
+
+  // Files sent together, gathered by the album collector, whatever kind its
+  // first part is: ahead of the handlers that would take that part alone.
+  bot.filter((ctx) => albumParts(ctx.message) !== undefined, handleAlbum);
 
   // Handle voice messages
   bot.on('message:voice', handleVoice);
