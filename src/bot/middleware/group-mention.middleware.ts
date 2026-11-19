@@ -12,6 +12,8 @@
  *   - a slash command meant for this bot (`/status` or `/status@this_bot`)
  *   - an answer to one of the bot's ForceReply prompts (/project), where Telegram attaches the reply itself and leaves nowhere to put a
  *     mention
+ *   - a reply to a question Claude is waiting on: an answer in the sender's
+ *     own words (see claude/typed-answer.ts)
  *
  * A plain reply is deliberately not enough: replying is how you quote someone
  * in Telegram, so people reply to the bot to talk *about* what it said as
@@ -24,6 +26,7 @@ import { type Context, type MiddlewareFn } from 'grammy';
 import type { MessageEntity, Update, UserFromGetMe } from 'grammy/types';
 import { config } from '../../config.js';
 import { isForceReplyPrompt } from '../../telegram/force-reply-tracker.js';
+import { isOpenQuestionMessage } from '../../claude/typed-answer.js';
 
 type TextAndEntities = { text: string; entities: MessageEntity[] };
 
@@ -95,6 +98,9 @@ export function isAddressedToBot(ctx: Context): boolean {
     // An answer to a ForceReply prompt is addressed by construction: the user
     // typed into a composer the bot opened, and could not have mentioned it.
     if (isForceReplyPrompt(ctx.chat!.id, repliedTo.message_id)) return true;
+    // Likewise a reply to a question Claude is waiting on: quoting one to
+    // talk about it can wait until it's answered.
+    if (isOpenQuestionMessage(ctx.chat!.id, repliedTo.message_id)) return true;
   }
 
   return isCommandForBot(content, ctx.me) || mentionsBot(content, ctx.me);

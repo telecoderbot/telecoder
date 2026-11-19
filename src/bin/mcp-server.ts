@@ -143,7 +143,7 @@ server.tool(
 // ── telecoder_ask_user (IPC: long-poll on Telegram button tap) ──────
 server.tool(
   'telecoder_ask_user',
-  'Ask the user a multiple-choice question via a Telegram inline keyboard. Use when you need a clear decision from the user (e.g. picking between approaches, confirming a destructive action, choosing among options) instead of free-text. Pauses the agent loop until the user taps a button or the question times out. Keep the question short and the options crisp — a label of ≤ 25 chars stays on its button; anything longer makes the whole keyboard fall back to lettered buttons (A/B/C) with the full labels listed in the message body. Prefer this over the built-in AskUserQuestion when interacting through TeleCoder. Several questions at once: pass `questions` (2-4) instead of `question`/`options` — they arrive as ONE form the user steps through, can revise, and submits; nothing reaches you before Submit. Never fire separate calls in a row for questions that belong together. IMPORTANT: `context` is required and carries everything the user needs to decide (the comparison, trade-offs, findings, rationale) — it renders in the SAME message as the buttons. Do NOT write that explanation as prose before calling this tool: text you emit before an ask_user call is not delivered to the user until after they answer, so they would be choosing blind.',
+  'Ask the user a multiple-choice question via a Telegram inline keyboard. Use when you need a clear decision from the user (e.g. picking between approaches, confirming a destructive action, choosing among options) rather than asking in prose. Pauses the agent loop until the user answers or the question times out. The user can always answer in their own words instead of tapping, by sending a message; you then get `User answered in their own words: …`, so don\'t add an "Other" option. Keep the question short and the options crisp — a label of ≤ 25 chars stays on its button; anything longer makes the whole keyboard fall back to lettered buttons (A/B/C) with the full labels listed in the message body. Prefer this over the built-in AskUserQuestion when interacting through TeleCoder. Several questions at once: pass `questions` (2-4) instead of `question`/`options` — they arrive as ONE form the user steps through, can revise, and submits; nothing reaches you before Submit. Never fire separate calls in a row for questions that belong together. IMPORTANT: `context` is required and carries everything the user needs to decide (the comparison, trade-offs, findings, rationale) — it renders in the SAME message as the buttons. Do NOT write that explanation as prose before calling this tool: text you emit before an ask_user call is not delivered to the user until after they answer, so they would be choosing blind.',
   {
     question: z.string().optional().describe('The question to display to the user. Keep concise (1-2 sentences). Required unless `questions` is given.'),
     context: z
@@ -179,11 +179,13 @@ server.tool(
       .min(1)
       .max(4)
       .optional()
-      .describe('Several related questions as one form, in place of `question`/`options`. The user answers each with buttons, can go back and change any answer, and nothing is sent until they tap Submit — like AskUserQuestion with several questions. 2-4 questions, 2-8 options each; `context` is shown once at the top.'),
+      .describe('Several related questions as one form, in place of `question`/`options`. The user answers each with a button or in their own words, can go back and change any answer, and nothing is sent until they tap Submit — like AskUserQuestion with several questions. 2-4 questions, 2-8 options each; `context` is shown once at the top.'),
   },
-  async ({ question, context, options, questions }) => {
+  async ({ question, context, options, questions }, extra) => {
     try {
-      const result = await ipc<IpcReply>('/mcp/ask_user', { question, context, options, questions });
+      // The signal lets the bot close the question when claude cancels the
+      // call, rather than leave it waiting out the clock.
+      const result = await ipc<IpcReply>('/mcp/ask_user', { question, context, options, questions }, extra.signal);
       return toolResult(result);
     } catch (error) {
       return {

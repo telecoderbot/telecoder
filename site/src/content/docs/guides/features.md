@@ -82,6 +82,8 @@ Everything TeleCoder does, by area. Commands are listed in full in [Commands](..
 ## Claude can reach you
 
 - MCP tools let Claude ask with buttons or polls, send files, and schedule prompts
+- Answer a question in your own words: send a message instead of tapping, like the
+  *Type something* row in Claude Code's own dialog
 - Several questions at once arrive as one form: step through them, go back to change an
   answer, and nothing reaches Claude until you tap Submit, as in Claude Code's own dialog
 - Secrets stay out of the chat: you send a key, the bot deletes it and hands it to the

@@ -17,6 +17,10 @@
  * Submit button appears. Only Submit resolves the tool call. The agent loop
  * waits throughout, like a single question.
  *
+ * A message sent while the form is open answers the question on screen in the
+ * user's own words, as the "Type something" row does in Claude Code's dialog
+ * (see typed-answer.ts), and moves on the way a tap does.
+ *
  * The form is in-memory, like single questions: a restart forgets it, and the
  * first tap afterwards takes the dead keyboard down. One clock for all of it
  * (QUESTION_TIMEOUT_MINUTES), from posting to Submit.
@@ -37,12 +41,20 @@ import {
 } from '../telegram/lettered-options.js';
 import { describeResponderRefusal } from '../telegram/admin-mention.js';
 import {
+  answerOrHangUp,
   buildAskUserExpiredNote,
   closeExpiredQuestion,
+  closeWithdrawnQuestion,
   noteAwaitingUser,
   questionTimeoutMinutes,
   questionTimeoutMs,
 } from './ask-user.js';
+import {
+  TYPED_ANSWER_HINT,
+  acceptTypedAnswers,
+  acknowledgeTypedAnswer,
+  shownTypedAnswer,
+} from './typed-answer.js';
 
 /** As many questions as Claude Code's own dialog takes. */
 export const MAX_FORM_QUESTIONS = 4;
@@ -59,10 +71,15 @@ export interface FormQuestion {
 
 export interface FormAnswer {
   question: string;
-  /** Zero-based index into that question's options. */
+  /** Zero-based index into that question's options; -1 for a typed answer. */
   index: number;
+  /** The option's label, or the answer the user typed. */
   label: string;
+  typed?: true;
 }
+
+/** One question's answer while the form is open: an option's index, or the user's own words. */
+export type FormPick = number | string;
 
 type Button = { text: string; callback_data: string };
 type Keyboard = Button[][];
@@ -72,8 +89,8 @@ export interface FormView {
   id: string;
   questions: FormQuestion[];
   context?: string;
-  /** Chosen option index per question; undefined while unanswered. */
-  answers: (number | undefined)[];
+  /** Answer per question; undefined while unanswered. */
+  answers: (FormPick | undefined)[];
   /** The question whose options are on the keyboard; -1 once all are answered. */
   cur: number;
 }
@@ -168,8 +185,9 @@ function oneLine(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
-function answerLine(q: FormQuestion, idx: number): string {
-  return `   ✅ ${optionLetter(idx)}. ${oneLine(q.options[idx].label)}`;
+function answerLine(q: FormQuestion, pick: FormPick): string {
+  if (typeof pick === 'string') return `   ✅ ${shownTypedAnswer(pick)}`;
+  return `   ✅ ${optionLetter(pick)}. ${oneLine(q.options[pick].label)}`;
 }
 
 function allAnswered(view: Pick<FormView, 'answers'>): boolean {
@@ -204,6 +222,7 @@ export function renderForm(view: FormView): { text: string; keyboard: Keyboard }
       letteredOptionLines(q.options).forEach((line, idx) => {
         body.push(idx === answer ? `   ✅ ${line}` : `   ${line}`);
       });
+      body.push(typeof answer === 'string' ? answerLine(q, answer) : `   ${TYPED_ANSWER_HINT}`);
     } else {
       body.push('');
       body.push(`${i + 1}. ${oneLine(q.question)}`);
@@ -264,9 +283,15 @@ export function buildFormKeyboard(view: FormView): Keyboard {
   return rows;
 }
 
-/** What the model reads back once the form is submitted. */
+/** What the model reads back once the form is submitted. A typed answer goes as typed, line breaks and all. */
 export function formatFormAnswers(answers: FormAnswer[]): string {
-  return ['User answered:', ...answers.map((a, i) => `${i + 1}. ${oneLine(a.question)} → ${oneLine(a.label)}`)].join('\n');
+  return [
+    'User answered:',
+    ...answers.map((a, i) => {
+      const answer = a.typed ? `in their own words: ${a.label.trim().replace(/\n/g, '\n   ')}` : oneLine(a.label);
+      return `${i + 1}. ${oneLine(a.question)} → ${answer}`;
+    }),
+  ].join('\n');
 }
 
 /**
@@ -278,7 +303,8 @@ export function buildFormConfirmation(
   opts: { isPrivate: boolean; who?: string },
 ): string {
   const who = opts.isPrivate ? 'You' : opts.who?.trim() || 'Someone';
-  return `✅ ${who} answered: ${answers.map((a, i) => `${i + 1}. ${oneLine(a.label)}`).join(' · ')}`;
+  const shown = (a: FormAnswer) => (a.typed ? shownTypedAnswer(a.label) : oneLine(a.label));
+  return `✅ ${who} answered: ${answers.map((a, i) => `${i + 1}. ${shown(a)}`).join(' · ')}`;
 }
 
 // ── Registry ─────────────────────────────────────────────────────────
@@ -381,12 +407,8 @@ export type FormTapOutcome =
  * restricted form must be impossible to advance without saying who tapped.
  */
 export function tapForm(id: string, tap: FormTap, responderId?: number): FormTapOutcome {
-  const entry = pending.get(id);
-  if (!entry) return { kind: 'expired' };
-  const allowed = entry.allowedResponderIds;
-  if (allowed && (responderId === undefined || !allowed.includes(responderId))) {
-    return { kind: 'forbidden', allowed };
-  }
+  const entry = openForm(id, responderId);
+  if (!('questions' in entry)) return entry;
 
   let toast: string | undefined;
   const n = entry.questions.length;
@@ -405,9 +427,11 @@ export function tapForm(id: string, tap: FormTap, responderId?: number): FormTap
     case 'submit': {
       if (allAnswered(entry)) {
         clearPending(id);
-        const answers = entry.questions.map((q, i) => {
-          const idx = entry.answers[i] as number;
-          return { question: q.question, index: idx, label: q.options[idx].label };
+        const answers = entry.questions.map((q, i): FormAnswer => {
+          const pick = entry.answers[i] as FormPick;
+          return typeof pick === 'string'
+            ? { question: q.question, index: -1, label: pick, typed: true }
+            : { question: q.question, index: pick, label: q.options[pick].label };
         });
         entry.resolve(answers);
         return { kind: 'submitted', text: renderSubmittedForm(entry), answers };
@@ -422,8 +446,40 @@ export function tapForm(id: string, tap: FormTap, responderId?: number): FormTap
   return { kind: 'redraw', ...drawn, ...(toast ? { toast } : {}) };
 }
 
+/**
+ * Answer the question on screen with text the user sent instead of tapping
+ * (see typed-answer.ts), and move on as a tap does. `none-open` when every
+ * question is answered and none is on screen, so there is nothing for the
+ * text to answer.
+ */
+export function typeFormAnswer(
+  id: string,
+  text: string,
+  responderId?: number,
+): Exclude<FormTapOutcome, { kind: 'submitted' }> | { kind: 'none-open' } {
+  const entry = openForm(id, responderId);
+  if (!('questions' in entry)) return entry;
+  if (entry.cur === -1) return { kind: 'none-open' };
+  entry.answers[entry.cur] = text;
+  entry.cur = nextUnanswered(entry.answers, entry.cur);
+  const drawn = renderForm(entry);
+  entry.lastText = drawn.text;
+  return { kind: 'redraw', ...drawn };
+}
+
+/** The open form this responder may answer, or the outcome that says why not. */
+function openForm(id: string, responderId?: number): FormState | Extract<FormTapOutcome, { kind: 'expired' | 'forbidden' }> {
+  const entry = pending.get(id);
+  if (!entry) return { kind: 'expired' };
+  const allowed = entry.allowedResponderIds;
+  if (allowed && (responderId === undefined || !allowed.includes(responderId))) {
+    return { kind: 'forbidden', allowed };
+  }
+  return entry;
+}
+
 /** The first unanswered question after `from`, wrapping round; -1 when none. */
-function nextUnanswered(answers: (number | undefined)[], from: number): number {
+function nextUnanswered(answers: (FormPick | undefined)[], from: number): number {
   const n = answers.length;
   for (let step = 1; step <= n; step++) {
     const i = (from + step) % n;
@@ -436,8 +492,8 @@ function nextUnanswered(answers: (number | undefined)[], from: number): number {
 
 /**
  * Post a form and wait for Submit: the whole of what the IPC handler does
- * once it has a chat to post into. Returns the text the
- * model reads as its tool result.
+ * once it has a chat to post into. Returns the text the model reads as its
+ * tool result, or null when `signal` hung up first and the form was withdrawn.
  */
 export async function runAskUserForm(opts: {
   api: Api;
@@ -446,10 +502,11 @@ export async function runAskUserForm(opts: {
   sessionKey: string;
   questions: FormQuestion[];
   context?: string;
+  signal?: AbortSignal;
   onPosted?: () => Promise<void>;
   onSettled?: () => Promise<void>;
-}): Promise<string> {
-  const { promise, form } = createPendingForm(opts.questions, opts.context, undefined, opts.sessionKey);
+}): Promise<string | null> {
+  const { id, promise, form } = createPendingForm(opts.questions, opts.context, undefined, opts.sessionKey);
   const { text, keyboard } = renderForm(form);
   // Plain text, no parse_mode, for the reasons the single question gives: the
   // text is the model's and a stray underscore would 400 the whole post.
@@ -459,13 +516,55 @@ export async function runAskUserForm(opts: {
   });
   await opts.onPosted?.();
 
-  const answers = await promise;
+  const stopTypedAnswers = acceptTypedAnswers({
+    sessionKey: opts.sessionKey,
+    chatId: opts.chatId,
+    messageId: sent.message_id,
+    take: (ctx, typed) => takeTypedFormAnswer(opts.api, sent, id, ctx, typed),
+  });
+  const answers = await answerOrHangUp(promise, opts.signal);
+  stopTypedAnswers();
   await opts.onSettled?.();
+  if (answers === 'hung-up') {
+    clearPending(id);
+    await closeWithdrawnQuestion(opts.api, sent, form.lastText);
+    return null;
+  }
   if (!answers) {
     await closeExpiredQuestion(opts.api, sent, form.lastText, buildAskUserExpiredNote());
     return `User did not respond within ${questionTimeoutMinutes()} minutes. Proceed using your best judgment or ask again.`;
   }
   return formatFormAnswers(answers);
+}
+
+/** A message sent while the form is open: the answer to the question on screen. */
+async function takeTypedFormAnswer(
+  api: Api,
+  sent: { chat: { id: number }; message_id: number },
+  id: string,
+  ctx: Context,
+  text: string,
+): Promise<boolean> {
+  const outcome = typeFormAnswer(id, text, ctx.from?.id);
+  if (outcome.kind === 'expired' || outcome.kind === 'forbidden') return false;
+  if (outcome.kind === 'none-open') {
+    // Kept out of the queue all the same: it would only wait there for a
+    // Submit that this message can't give.
+    await ctx.reply(
+      'Every question already has an answer. To change one, tap its number above and send the new answer, or tap Submit.',
+      { reply_parameters: { message_id: ctx.message!.message_id, allow_sending_without_reply: true } },
+    ).catch(() => {});
+    return true;
+  }
+  try {
+    await api.editMessageText(sent.chat.id, sent.message_id, outcome.text, {
+      reply_markup: { inline_keyboard: outcome.keyboard },
+    });
+  } catch {
+    // As for a tap: the state moved on regardless, and the next redraw catches up.
+  }
+  await acknowledgeTypedAnswer(ctx);
+  return true;
 }
 
 // ── The tap handler ──────────────────────────────────────────────────

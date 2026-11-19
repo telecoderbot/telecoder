@@ -87,6 +87,7 @@ import { getBotCommandNames } from '../../claude/command-parser.js';
 import { hasSelfStartedTurn, whenRepliesSent } from '../../claude/monitor-relay.js';
 import { cancelRequest, clearQueue, isProcessing } from '../../claude/request-queue.js';
 import { cancelSecretRequest } from '../../claude/secret-request.js';
+import { stopTypedAnswers } from '../../claude/typed-answer.js';
 import { getPtyProvider } from '../../providers/claude-provider.js';
 import { isAdmin } from '../../utils/admins.js';
 import { ensureStateDir, getStateDir, readJsonFile, writeJsonFile } from '../../utils/json-store.js';
@@ -413,7 +414,8 @@ export function takeBackAllQueued(api: Api, sessionKey: SessionKey, keep?: Queue
 
 /**
  * What /cancel does to a session: drop what's waiting, withdraw a request for a
- * secret, and stop the turn, whoever started it. `keep` stays in line, to go once
+ * secret, stop taking messages as answers to a question, and stop the turn,
+ * whoever started it. `keep` stays in line, to go once
  * the turn has stopped. Whether anything was stopped, and how many were dropped.
  */
 export async function stopTurn(api: Api, sessionKey: SessionKey, keep?: QueuedMessage):
@@ -423,6 +425,7 @@ export async function stopTurn(api: Api, sessionKey: SessionKey, keep?: QueuedMe
   // Before the turn, too: until the request is withdrawn, the next message
   // would still be taken for the secret it asked for.
   const secretCancelled = cancelSecretRequest(sessionKey);
+  stopTypedAnswers(sessionKey);
   // A turn claude started itself has no handle for cancelRequest to find.
   const stopped = await cancelRequest(sessionKey) || getPtyProvider().interruptOwnTurn(sessionKey) || secretCancelled;
   return { stopped, dropped: takenBack + clearQueue(sessionKey) };

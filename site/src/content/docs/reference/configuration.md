@@ -85,7 +85,7 @@ See [Sharing a bot](../guides/sharing.md) for how the pieces fit together.
 | `ALLOWED_GROUP_IDS` | — | Group/supergroup IDs the bot may be used in |
 | `GROUP_MEMBERS_DEFAULT` | `spectator` | What membership alone grants: `spectator` or `contributor` |
 | `GROUP_REQUIRE_MENTION` | `true` | Only treat messages that address the bot as prompts |
-| `GROUP_REPLY_IS_MENTION` | `false` | Treat any reply to the bot as addressing it |
+| `GROUP_REPLY_IS_MENTION` | `false` | Treat any reply to the bot as addressing it. A reply to a question Claude is waiting on always does |
 
 How these three fit together: [Group roles](../guides/sharing.md#group-roles).
 

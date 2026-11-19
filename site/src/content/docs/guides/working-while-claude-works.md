@@ -43,9 +43,19 @@ a turn is running, **⚡ Interrupt & send** stops the turn and sends it now, as 
 While nothing is running, **📤 Send now** just sends it. A message set aside with **🔔 Ask me
 after** gets the same buttons.
 
+## When Claude asks you something
+
+When Claude asks you a question with buttons, you can also answer it in your own words,
+like the *Type something* row in Claude Code: send your answer as a message. It goes to
+Claude as your answer, not as a new prompt, and the bot reacts to it with 👌. In a form
+of several questions, it answers the question on screen and moves on to the next. With
+several questions open, reply to the one you mean. In a group, reply to the question
+rather than @mentioning the bot.
+
 ## Messages that have to wait
 
-A message you send while Claude is busy waits for the turn to end, and the bot says so:
+A message you send while Claude is busy, and not waiting on an answer from you, waits for
+the turn to end, and the bot says so:
 *⏳ Queued behind the running turn.* Under that notice:
 
 - **🗑 Take back**: withdraw it.

@@ -29,10 +29,16 @@ import {
   buildAskUserMessageText,
   buildAskUserKeyboard,
   buildAskUserExpiredNote,
+  answerOrHangUp,
+  closeAnsweredQuestion,
   closeExpiredQuestion,
+  closeWithdrawnQuestion,
   questionTimeoutMinutes,
+  resolvePendingQuestionWithText,
+  withdrawPendingQuestion,
 } from './ask-user.js';
 import { resolveAskUserArgs, runAskUserForm } from './ask-user-form.js';
+import { acceptTypedAnswers, acknowledgeTypedAnswer, shownTypedAnswer } from './typed-answer.js';
 import { createPendingPoll } from './poll-user.js';
 import { scheduler } from './scheduler.js';
 import { readLastAssistantTurnText } from './session-jsonl.js';
@@ -115,9 +121,11 @@ async function flushTurnProse(
 // ask-user registry, sends a Telegram inline keyboard, and
 // awaits the user's button tap. The existing callback-query dispatcher
 // (handling `q:<id>:<idx>` callback_data) resolves the promise so we can
-// return the chosen label to claude. Times out after QUESTION_TIMEOUT_MINUTES via
-// createPendingQuestion's default.
-registerIpcHandler('/mcp/ask_user', async (turn, body) => {
+// return the chosen label to claude, and a message the user sends instead is
+// their answer in their own words (typed-answer.ts). Times out after
+// QUESTION_TIMEOUT_MINUTES via createPendingQuestion's default, and closes
+// early when claude cancels the call.
+registerIpcHandler('/mcp/ask_user', async (turn, body, signal) => {
   const context = typeof body.context === 'string' ? body.context : undefined;
   const asked = resolveAskUserArgs(body);
   if (typeof asked === 'string') return { success: false, message: asked };
@@ -145,10 +153,11 @@ registerIpcHandler('/mcp/ask_user', async (turn, body) => {
       sessionKey: turn.sessionKey,
       questions: asked.form,
       context,
+      signal,
       onPosted: () => messageSender.noteQuestionPosted(ctx, turn.sessionKey),
       onSettled: () => messageSender.noteQuestionAnswered(ctx, turn.sessionKey),
     });
-    return { success: true, message };
+    return message === null ? withdrawnAnswer() : { success: true, message };
   }
   const { question, options } = asked;
 
@@ -188,8 +197,26 @@ registerIpcHandler('/mcp/ask_user', async (turn, body) => {
   // status line says we're blocked on the user.
   await messageSender.noteQuestionPosted(ctx, turn.sessionKey);
 
-  const answer = await promise;
+  // A message sent now is an answer in the user's own words (typed-answer.ts).
+  const stopTypedAnswers = acceptTypedAnswers({
+    sessionKey: turn.sessionKey,
+    chatId: ctx.chat.id,
+    messageId: sent.message_id,
+    take: async (msgCtx, text) => {
+      if (resolvePendingQuestionWithText(id, text, msgCtx.from?.id) !== 'resolved') return false;
+      await acknowledgeTypedAnswer(msgCtx);
+      return true;
+    },
+  });
+
+  const answer = await answerOrHangUp(promise, signal);
+  stopTypedAnswers();
   await messageSender.noteQuestionAnswered(ctx, turn.sessionKey);
+  if (answer === 'hung-up') {
+    withdrawPendingQuestion(id);
+    await closeWithdrawnQuestion(ctx.api, sent, messageText);
+    return withdrawnAnswer();
+  }
   if (!answer) {
     await closeExpiredQuestion(ctx.api, sent, messageText, buildAskUserExpiredNote());
     return {
@@ -197,8 +224,18 @@ registerIpcHandler('/mcp/ask_user', async (turn, body) => {
       message: `User did not respond within ${questionTimeoutMinutes()} minutes. Proceed using your best judgment or ask again.`,
     };
   }
+  if (answer.typed) {
+    // A tap closes its question in bot.ts; a typed answer has no tap to do it.
+    await closeAnsweredQuestion(ctx.api, sent, messageText, shownTypedAnswer(answer.label));
+    return { success: true, message: `User answered in their own words: ${answer.label}` };
+  }
   return { success: true, message: `User selected: ${answer.label}` };
 });
+
+/** What claude reads for a question it stopped waiting on, should the reply still reach it. */
+function withdrawnAnswer(): { success: false; message: string } {
+  return { success: false, message: 'The question was withdrawn before the user answered.' };
+}
 
 // ── /mcp/request_secret ──────────────────────────────────────────────
 // Long-polls like ask_user: the user's answer is a message that

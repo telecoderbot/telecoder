@@ -12,10 +12,13 @@ import {
   formatFormAnswers,
   buildFormConfirmation,
   runAskUserForm,
+  typeFormAnswer,
   _resetFormsForTests,
   type FormQuestion,
 } from '../../src/claude/ask-user-form.js';
 import { hasPendingQuestionForSession } from '../../src/claude/ask-user.js';
+import { _resetTypedAnswersForTests, captureTypedAnswers, isOpenQuestionMessage } from '../../src/claude/typed-answer.js';
+import type { Context } from 'grammy';
 
 const QUESTIONS: FormQuestion[] = [
   { question: 'Which approach?', options: [{ label: 'Patch', description: 'quick' }, { label: 'Rewrite' }] },
@@ -24,6 +27,7 @@ const QUESTIONS: FormQuestion[] = [
 
 afterEach(() => {
   _resetFormsForTests();
+  _resetTypedAnswersForTests();
   vi.useRealTimers();
 });
 
@@ -79,7 +83,7 @@ describe('renderForm', () => {
     expect(text).toBe(
       '📋 2 questions · answer each, then Submit. You can change an answer until then.\n\n' +
         'Some context.\n\n' +
-        '▶ 1. Which approach?\n   A. Patch — quick\n   B. Rewrite\n\n' +
+        '▶ 1. Which approach?\n   A. Patch — quick\n   B. Rewrite\n   ✏️ Or reply with your own answer.\n\n' +
         '2. Which model?',
     );
   });
@@ -100,6 +104,14 @@ describe('renderForm', () => {
     const { text } = renderForm({ id: 'f1', questions: QUESTIONS, context: 'x'.repeat(5000), answers: [undefined, undefined], cur: 0 });
     expect(text.length).toBeLessThanOrEqual(4096);
     expect(text).toContain('…\n\n▶ 1. Which approach?');
+  });
+});
+
+describe('renderForm with a typed answer', () => {
+  it('shows it in place of the hint on the question on screen, and as the answer on the others', () => {
+    const view = { id: 'f1', questions: QUESTIONS, answers: ['  my own\nwords ', undefined], cur: 0 };
+    expect(renderForm(view).text).toContain('   B. Rewrite\n   ✅ ✏️ my own words\n\n2. Which model?');
+    expect(renderForm({ ...view, cur: 1 }).text).toContain('1. Which approach?\n   ✅ ✏️ my own words\n\n▶ 2.');
   });
 });
 
@@ -251,6 +263,52 @@ describe('what the model and the chat read back', () => {
   });
 });
 
+describe('a form, answer by typed answer', () => {
+  it('answers the question on screen and moves on, as a tap does', () => {
+    const { id } = createPendingForm(QUESTIONS, undefined, 60_000, 'chat-ty1');
+    const outcome = typeFormAnswer(id, 'a third way');
+    expect(outcome.kind).toBe('redraw');
+    expect(outcome.kind === 'redraw' && outcome.text).toContain('1. Which approach?\n   ✅ ✏️ a third way');
+    expect(outcome.kind === 'redraw' && outcome.text).toContain('▶ 2. Which model?');
+  });
+
+  it('submits a typed answer as typed', async () => {
+    const { id, promise } = createPendingForm(QUESTIONS, undefined, 60_000, 'chat-ty2');
+    typeFormAnswer(id, 'a third way');
+    tapForm(id, { kind: 'option', question: 1, index: 2 });
+    tapForm(id, { kind: 'submit' });
+    await expect(promise).resolves.toEqual([
+      { question: 'Which approach?', index: -1, label: 'a third way', typed: true },
+      { question: 'Which model?', index: 2, label: 'Haiku' },
+    ]);
+  });
+
+  it('has nothing to answer once every question is answered and none is on screen', () => {
+    const { id } = createPendingForm(QUESTIONS, undefined, 60_000, 'chat-ty3');
+    typeFormAnswer(id, 'one');
+    typeFormAnswer(id, 'two');
+    expect(typeFormAnswer(id, 'three')).toEqual({ kind: 'none-open' });
+    // Tapping a number brings one back to answer again.
+    tapForm(id, { kind: 'goto', question: 0 });
+    expect(typeFormAnswer(id, 'three').kind).toBe('redraw');
+  });
+
+  it('is expired for a form that is gone', () => {
+    expect(typeFormAnswer('nope', 'x')).toEqual({ kind: 'expired' });
+  });
+
+  it('reads back as typed to the model, line breaks kept, and on one line to the chat', () => {
+    const answers = [
+      { question: 'Which approach?', index: -1, label: 'a third:\nkeep both', typed: true as const },
+      { question: 'Which model?', index: 0, label: 'Opus' },
+    ];
+    expect(formatFormAnswers(answers)).toBe(
+      'User answered:\n1. Which approach? → in their own words: a third:\n   keep both\n2. Which model? → Opus',
+    );
+    expect(buildFormConfirmation(answers, { isPrivate: true })).toBe('✅ You answered: 1. ✏️ a third: keep both · 2. Opus');
+  });
+});
+
 describe('runAskUserForm', () => {
   function fakeApi() {
     return {
@@ -296,5 +354,61 @@ describe('runAskUserForm', () => {
     const [, , text] = api.editMessageText.mock.calls[0];
     expect(text).toContain('✅ A. Patch');
     expect(text).toContain('No answer within 10 min');
+  });
+
+  /** A text message from the user, run through the capture middleware; true when it went on. */
+  async function typeMessage(text: string) {
+    const ctx = {
+      chat: { id: 42, type: 'private' },
+      from: { id: 42 },
+      message: { message_id: 900, chat: { id: 42 }, text },
+      react: vi.fn().mockResolvedValue(true),
+      reply: vi.fn().mockResolvedValue({}),
+    };
+    let passed = false;
+    await captureTypedAnswers(ctx as unknown as Context, async () => {
+      passed = true;
+    });
+    return { ctx, passed };
+  }
+
+  it('takes a message sent while it is open as the answer to the question on screen', async () => {
+    const api = fakeApi();
+    const run = runAskUserForm({ api: api as unknown as Api, chatId: 42, sessionKey: '42', questions: QUESTIONS });
+    await vi.waitFor(() => expect(api.sendMessage).toHaveBeenCalled());
+    const id = api.sendMessage.mock.calls[0][2].reply_markup.inline_keyboard[0][0].callback_data.split(':')[1];
+    await vi.waitFor(() => expect(isOpenQuestionMessage(42, 7)).toBe(true));
+
+    const first = await typeMessage('a third way');
+    expect(first.passed).toBe(false);
+    expect(first.ctx.react).toHaveBeenCalledWith('👌');
+    const [chatId, messageId, text, extra] = api.editMessageText.mock.calls[0];
+    expect([chatId, messageId]).toEqual([42, 7]);
+    expect(text).toContain('✅ ✏️ a third way');
+    expect(extra.reply_markup.inline_keyboard.length).toBeGreaterThan(0);
+
+    tapForm(id, { kind: 'option', question: 1, index: 0 });
+    const extraText = await typeMessage('and another thing');
+    expect(extraText.passed).toBe(false);
+    expect(extraText.ctx.reply.mock.calls[0][0]).toMatch(/Every question already has an answer/);
+
+    tapForm(id, { kind: 'submit' });
+    await expect(run).resolves.toBe('User answered:\n1. Which approach? → in their own words: a third way\n2. Which model? → Opus');
+    // Closed to typed answers once it is done.
+    expect((await typeMessage('later')).passed).toBe(true);
+  });
+
+  it('withdraws the form when claude hangs up, and stops taking messages for it', async () => {
+    const api = fakeApi();
+    const hangUp = new AbortController();
+    const run = runAskUserForm({
+      api: api as unknown as Api, chatId: 42, sessionKey: '42', questions: QUESTIONS, signal: hangUp.signal,
+    });
+    await vi.waitFor(() => expect(isOpenQuestionMessage(42, 7)).toBe(true));
+    hangUp.abort();
+    await expect(run).resolves.toBeNull();
+    expect(api.editMessageText.mock.calls[0][2]).toContain('🚫 Claude stopped waiting for an answer.');
+    expect(hasPendingQuestionForSession('42')).toBe(false);
+    expect((await typeMessage('hello')).passed).toBe(true);
   });
 });

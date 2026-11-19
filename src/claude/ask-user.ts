@@ -30,12 +30,15 @@ import {
   buildLetteredKeyboard,
   letteredOptionLines,
 } from '../telegram/lettered-options.js';
+import { TYPED_ANSWER_HINT } from './typed-answer.js';
 
 export interface AskUserAnswer {
-  /** The label of the option the user selected. */
+  /** The label of the option the user selected, or the answer they typed. */
   label: string;
-  /** Zero-based index into the options array. */
+  /** Zero-based index into the options array; -1 for a typed answer. */
   index: number;
+  /** The user typed this answer rather than tapping an option (see typed-answer.ts). */
+  typed?: true;
 }
 
 /**
@@ -75,6 +78,8 @@ export function questionTimeoutMs(): number {
  *
  *   A. Label — description  ← every option, keyed by its letter
  *
+ *   ✏️ Or reply with your own answer.
+ *
  * The `context` block is the fix for the "user is asked to choose before the
  * explanation is shown" bug: prose the model emits *before* calling ask_user
  * isn't delivered until end-of-turn (after the tap), so decision-relevant
@@ -101,6 +106,8 @@ export function buildAskUserMessageText(
   // it.
   lines.push('');
   lines.push(...letteredOptionLines(options));
+  lines.push('');
+  lines.push(TYPED_ANSWER_HINT);
 
   return lines.join('\n');
 }
@@ -156,6 +163,26 @@ export function buildAskUserExpiredNote(): string {
 }
 
 /**
+ * Wait for a question's answer, or for the tool call that asked it to hang up:
+ * claude cancelled the call, as it does when its turn is stopped, or its pty
+ * went away. `'hung-up'` then, and the caller withdraws the question and
+ * closes its message, which would otherwise wait out the clock looking live
+ * and take the next message typed for its answer.
+ */
+export function answerOrHangUp<T>(answer: Promise<T>, signal?: AbortSignal): Promise<T | 'hung-up'> {
+  if (!signal) return answer;
+  if (signal.aborted) return Promise.resolve('hung-up');
+  return new Promise((resolve) => {
+    const onAbort = (): void => resolve('hung-up');
+    signal.addEventListener('abort', onAbort, { once: true });
+    void answer.then((value) => {
+      signal.removeEventListener('abort', onAbort);
+      resolve(value);
+    });
+  });
+}
+
+/**
  * Close a question nobody answered in time: take its keyboard down and say
  * what happened where the answer would have gone.
  *
@@ -176,8 +203,38 @@ export async function closeExpiredQuestion(
   note: string,
   entities?: MessageEntity[],
 ): Promise<void> {
+  await closeQuestion(api, message, appendExpiredFooter(text, note), entities);
+}
+
+/**
+ * Close a question answered by something other than a tap, which bot.ts
+ * closes itself: a typed answer. Same fallbacks as {@link closeExpiredQuestion}.
+ */
+export async function closeAnsweredQuestion(
+  api: Pick<Api, 'editMessageText' | 'editMessageReplyMarkup'>,
+  message: { chat: { id: number }; message_id: number },
+  text: string,
+  label: string,
+): Promise<void> {
+  await closeQuestion(api, message, appendAnsweredFooter(text, label));
+}
+
+/** Close a question claude stopped waiting on (see {@link answerOrHangUp}). Same fallbacks. */
+export async function closeWithdrawnQuestion(
+  api: Pick<Api, 'editMessageText' | 'editMessageReplyMarkup'>,
+  message: { chat: { id: number }; message_id: number },
+  text: string,
+): Promise<void> {
+  await closeQuestion(api, message, appendFooter(text, '🚫 Claude stopped waiting for an answer.'));
+}
+
+async function closeQuestion(
+  api: Pick<Api, 'editMessageText' | 'editMessageReplyMarkup'>,
+  message: { chat: { id: number }; message_id: number },
+  closed: string | null,
+  entities?: MessageEntity[],
+): Promise<void> {
   const chatId = message.chat.id;
-  const closed = appendExpiredFooter(text, note);
   if (closed !== null) {
     try {
       await api.editMessageText(chatId, message.message_id, closed, entities ? { entities } : undefined);
@@ -192,7 +249,7 @@ export async function closeExpiredQuestion(
   } catch (err) {
     // Nothing left to try here. A tap on it still gets the expired answer,
     // and the tap handler strips the keyboard then.
-    console.warn('[AskUser] could not close an expired question:', err instanceof Error ? err.message : err);
+    console.warn('[AskUser] could not close a question:', err instanceof Error ? err.message : err);
   }
 }
 
@@ -305,7 +362,8 @@ export function createPendingQuestion(
 /**
  * Take a question back without answering it: its promise never settles, and a
  * later tap gets the expired toast. For an asker that stopped needing the
- * answer — the memory guard whose wait found room before anyone tapped.
+ * answer — the memory guard whose wait found room before anyone tapped, or
+ * an ask_user call claude cancelled.
  */
 export function withdrawPendingQuestion(id: string): void {
   clearPending(id);
@@ -325,6 +383,35 @@ export function resolvePendingQuestion(
   optionIndex: number,
   responderId?: number,
 ): ResolveOutcome {
+  const entry = claimPending(id, responderId);
+  if (typeof entry === 'string') return entry;
+  const label = entry.optionLabels[optionIndex];
+  if (label === undefined) {
+    entry.resolve(null);
+    return 'resolved';
+  }
+  entry.resolve({ label, index: optionIndex });
+  return 'resolved';
+}
+
+/**
+ * Resolve a pending question with an answer the user typed instead of tapping
+ * (see typed-answer.ts). Same outcomes, and the same responder check, as
+ * {@link resolvePendingQuestion}.
+ */
+export function resolvePendingQuestionWithText(
+  id: string,
+  text: string,
+  responderId?: number,
+): ResolveOutcome {
+  const entry = claimPending(id, responderId);
+  if (typeof entry === 'string') return entry;
+  entry.resolve({ label: text, index: -1, typed: true });
+  return 'resolved';
+}
+
+/** Take a question off the books for this responder to answer, or say why they can't. */
+function claimPending(id: string, responderId?: number): PendingEntry | 'expired' | 'forbidden' {
   const entry = pending.get(id);
   if (!entry) return 'expired';
 
@@ -336,13 +423,7 @@ export function resolvePendingQuestion(
   }
 
   clearPending(id);
-  const label = entry.optionLabels[optionIndex];
-  if (label === undefined) {
-    entry.resolve(null);
-    return 'resolved';
-  }
-  entry.resolve({ label, index: optionIndex });
-  return 'resolved';
+  return entry;
 }
 
 /** Whether the asker closes this question's message itself (see PendingEntry.ownerCloses). Read before resolving: resolving drops the entry. */

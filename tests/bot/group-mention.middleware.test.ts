@@ -4,6 +4,7 @@ import type { MessageEntity } from 'grammy/types';
 import { groupMentionMiddleware, isAddressedToBot } from '../../src/bot/middleware/group-mention.middleware.js';
 import { rememberForceReplyPrompt, clearForceReplyPrompts } from '../../src/telegram/force-reply-tracker.js';
 import { config } from '../../src/config.js';
+import { acceptTypedAnswers } from '../../src/claude/typed-answer.js';
 
 const BOT_ID = 8833142947;
 const BOT_USERNAME = 'code_share1_bot';
@@ -96,6 +97,19 @@ describe('isAddressedToBot', () => {
   it('still ignores a reply to a bot message that was not a ForceReply prompt', () => {
     rememberForceReplyPrompt(GROUP, PROMPT_MSG_ID + 1);
     expect(isAddressedToBot(makeCtx({ text: 'nice one', replyFromId: BOT_ID }))).toBe(false);
+  });
+
+  it('accepts a reply to a question Claude is waiting on, as an answer in the sender\'s words', () => {
+    const stop = acceptTypedAnswers({
+      sessionKey: String(GROUP), chatId: GROUP, messageId: PROMPT_MSG_ID, take: async () => true,
+    });
+    try {
+      expect(isAddressedToBot(makeCtx({ text: 'neither, use the cache', replyFromId: BOT_ID }))).toBe(true);
+    } finally {
+      stop();
+    }
+    // Once answered it is an ordinary bot message again.
+    expect(isAddressedToBot(makeCtx({ text: 'neither, use the cache', replyFromId: BOT_ID }))).toBe(false);
   });
 
   it('does not mistake a pasted absolute path for a command', () => {

@@ -116,6 +116,7 @@ import { handleDeleteThread, handleDeleteThreadCallback } from './handlers/comma
 import { initThreadsSetup } from '../telegram/threads-setup.js';
 import { resolvePendingPoll } from '../claude/poll-user.js';
 import { captureSecretMessages, handleSecretCallback } from '../claude/secret-request.js';
+import { captureTypedAnswers } from '../claude/typed-answer.js';
 import { registerBotCommandName } from '../claude/command-parser.js';
 import { buildCommandMenu, setCommandCatalog } from './command-catalog.js';
 import { handleCommandFixCallback, initCommandFallback } from './handlers/command-fallback.js';
@@ -321,6 +322,10 @@ export async function createBot(botInfo?: UserFromGetMe): Promise<Bot> {
   // the answer can't wait in line behind it either. Commands pass, so /cancel
   // still works.
   bot.use(captureSecretMessages);
+
+  // A message sent while telecoder_ask_user waits on a tap is the answer in
+  // the user's own words, and leaves the stream here for the same reason.
+  bot.use(captureTypedAnswers);
 
   // Register through `cmd` rather than `bot.command` directly so the set of
   // names TeleCoder claims stays discoverable at runtime. Registration order

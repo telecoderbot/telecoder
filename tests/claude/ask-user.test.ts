@@ -10,6 +10,10 @@ import {
   buildAnswerConfirmation,
   createPendingQuestion,
   resolvePendingQuestion,
+  resolvePendingQuestionWithText,
+  answerOrHangUp,
+  closeAnsweredQuestion,
+  closeWithdrawnQuestion,
   getQuestionResponders,
   getQuestionOptionLabel,
   hasPendingQuestionForSession,
@@ -17,11 +21,12 @@ import {
   questionOwnerCloses,
   withdrawPendingQuestion,
 } from '../../src/claude/ask-user.js';
+import { TYPED_ANSWER_HINT as HINT } from '../../src/claude/typed-answer.js';
 
 describe('buildAskUserMessageText', () => {
   it('lists every option under the question, keyed by letter', () => {
     const text = buildAskUserMessageText('Pick one', [{ label: 'Left' }, { label: 'Right' }]);
-    expect(text).toBe('❓ Pick one\n\nA. Left\nB. Right');
+    expect(text).toBe(`❓ Pick one\n\nA. Left\nB. Right\n\n${HINT}`);
   });
 
   it('appends a description to the option that carries one', () => {
@@ -29,7 +34,7 @@ describe('buildAskUserMessageText', () => {
       { label: 'Left', description: 'first' },
       { label: 'Right', description: 'second' },
     ]);
-    expect(text).toBe('❓ Pick one\n\nA. Left — first\nB. Right — second');
+    expect(text).toBe(`❓ Pick one\n\nA. Left — first\nB. Right — second\n\n${HINT}`);
   });
 
   it('inserts the context block between the question and the options', () => {
@@ -42,7 +47,8 @@ describe('buildAskUserMessageText', () => {
       '❓ Which model?\n\n' +
         'Current: Scout — $X, 128k ctx.\nClosest: GPT-OSS 120B.\n\n' +
         'A. GPT-OSS 120B — $0.15/$0.60\n' +
-        'B. Qwen3 32B',
+        'B. Qwen3 32B\n\n' +
+        HINT,
     );
   });
 
@@ -54,7 +60,7 @@ describe('buildAskUserMessageText', () => {
 
   it('ignores blank/whitespace-only context', () => {
     const text = buildAskUserMessageText('Pick', [{ label: 'Yes' }, { label: 'No' }], '   \n  ');
-    expect(text).toBe('❓ Pick\n\nA. Yes\nB. No');
+    expect(text).toBe(`❓ Pick\n\nA. Yes\nB. No\n\n${HINT}`);
   });
 
   it('clips over-long context to keep the message under Telegram limits', () => {
@@ -174,6 +180,53 @@ describe('closeExpiredQuestion', () => {
     const quiet = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await expect(close(api, '❓ Pick one')).resolves.toBeUndefined();
     quiet.mockRestore();
+  });
+});
+
+describe('closeAnsweredQuestion and closeWithdrawnQuestion', () => {
+  const message = { chat: { id: 42 }, message_id: 7 };
+  const fakeApi = () => ({
+    editMessageText: vi.fn().mockResolvedValue(true),
+    editMessageReplyMarkup: vi.fn().mockResolvedValue(true),
+  });
+  type EditApi = Parameters<typeof closeAnsweredQuestion>[0];
+
+  it('writes the answer under the question, keyboard down', async () => {
+    const api = fakeApi();
+    await closeAnsweredQuestion(api as unknown as EditApi, message, '❓ Pick one', '✏️ neither');
+    expect(api.editMessageText).toHaveBeenCalledWith(42, 7, '❓ Pick one\n\n✅ Answered: ✏️ neither', undefined);
+  });
+
+  it('says Claude stopped waiting', async () => {
+    const api = fakeApi();
+    await closeWithdrawnQuestion(api as unknown as EditApi, message, '❓ Pick one');
+    expect(api.editMessageText).toHaveBeenCalledWith(42, 7, '❓ Pick one\n\n🚫 Claude stopped waiting for an answer.', undefined);
+  });
+
+  it('falls back to taking the keyboard down, as an expired question does', async () => {
+    const api = fakeApi();
+    await closeWithdrawnQuestion(api as unknown as EditApi, message, 'x'.repeat(4090));
+    expect(api.editMessageText).not.toHaveBeenCalled();
+    expect(api.editMessageReplyMarkup).toHaveBeenCalledWith(42, 7);
+  });
+});
+
+describe('answerOrHangUp', () => {
+  it('passes the answer through when nobody hangs up', async () => {
+    const hangUp = new AbortController();
+    await expect(answerOrHangUp(Promise.resolve('B'), hangUp.signal)).resolves.toBe('B');
+    await expect(answerOrHangUp(Promise.resolve('B'))).resolves.toBe('B');
+  });
+
+  it('settles on a hang-up while the answer never comes', async () => {
+    const hangUp = new AbortController();
+    const waiting = answerOrHangUp(new Promise<string>(() => {}), hangUp.signal);
+    hangUp.abort();
+    await expect(waiting).resolves.toBe('hung-up');
+  });
+
+  it('settles at once on a signal that has already hung up', async () => {
+    await expect(answerOrHangUp(new Promise<string>(() => {}), AbortSignal.abort())).resolves.toBe('hung-up');
   });
 });
 
@@ -368,5 +421,26 @@ describe('a question its asker closes', () => {
     await vi.advanceTimersByTimeAsync(2000);
     expect(settled).toBe(false);
     vi.useRealTimers();
+  });
+});
+
+describe('resolvePendingQuestionWithText', () => {
+  it('answers with the typed text, marked as typed', async () => {
+    const { id, promise } = createPendingQuestion(['A', 'B'], undefined, 'chat-t1');
+    expect(resolvePendingQuestionWithText(id, 'neither, use C', 5)).toBe('resolved');
+    await expect(promise).resolves.toEqual({ label: 'neither, use C', index: -1, typed: true });
+    expect(hasPendingQuestionForSession('chat-t1')).toBe(false);
+  });
+
+  it('is expired once a tap got there first', () => {
+    const { id } = createPendingQuestion(['A', 'B'], undefined, 'chat-t2');
+    resolvePendingQuestion(id, 0);
+    expect(resolvePendingQuestionWithText(id, 'too late')).toBe('expired');
+  });
+
+  it('keeps the responder check of a restricted question', () => {
+    const { id } = createPendingQuestion(['A', 'B'], undefined, 'chat-t3', [7]);
+    expect(resolvePendingQuestionWithText(id, 'me', 99)).toBe('forbidden');
+    expect(resolvePendingQuestionWithText(id, 'me', 7)).toBe('resolved');
   });
 });
