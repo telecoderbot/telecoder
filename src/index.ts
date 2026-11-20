@@ -37,6 +37,7 @@ import { autoResumeAfterReload } from './startup/auto-resume.js';
 import { autoContinueOnStartup } from './startup/auto-continue.js';
 import { notifyInterruptedSessions, notifyRestartComplete } from './startup/notices.js';
 import { tickWasStalled } from './utils/host-stall.js';
+import { EXIT_TELEGRAM_UNAVAILABLE } from './utils/exit-codes.js';
 import { describeRunningBuild } from './utils/build-info.js';
 import { migrateLegacyStateDirAndLog } from './utils/state-dir-migration.js';
 import { verifyBotTokenOrExit } from './startup/verify-token.js';
@@ -338,7 +339,7 @@ async function main() {
         console.error(`[HEARTBEAT] getMe timed out (${heartbeatTimeouts}/${MAX_HEARTBEAT_TIMEOUTS}):`, err);
         if (heartbeatTimeouts >= MAX_HEARTBEAT_TIMEOUTS) {
           console.error('[HEARTBEAT] Telegram unreachable for too long — exiting for restart');
-          process.exit(1);
+          process.exit(EXIT_TELEGRAM_UNAVAILABLE);
         }
         return;
       }
@@ -346,7 +347,7 @@ async function main() {
       console.error(`[HEARTBEAT] getMe failed (${heartbeatFailures}/${MAX_HEARTBEAT_FAILURES}):`, err);
       if (heartbeatFailures >= MAX_HEARTBEAT_FAILURES) {
         console.error('[HEARTBEAT] Too many consecutive failures — exiting for restart');
-        process.exit(1);
+        process.exit(EXIT_TELEGRAM_UNAVAILABLE);
       }
     }
   }, HEARTBEAT_INTERVAL_MS);

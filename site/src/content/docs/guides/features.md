@@ -111,6 +111,10 @@ Everything TeleCoder does, by area. Commands are listed in full in [Commands](..
   started together can't both slip past; `/botstatus` shows the machine's available memory
   and the claudes running
 - `/sync` resends a reply Telegram missed
+- A bot that crashes comes back on a backoff, and one that can't start at all is given up
+  on after five tries. A bot that exits because Telegram isn't answering (a 502, a timeout,
+  no network) is no crash: the launcher keeps trying, up to every five minutes, until
+  Telegram is back
 - `/restartbot` and `/update` from chat; the background service brings the bot back
 - `/rebuildbot idle` builds once and restarts each bot as soon as it has nothing left to
   finish: no turn running, no background task or shell command out, no reply still on its

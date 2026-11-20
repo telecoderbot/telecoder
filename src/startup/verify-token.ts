@@ -13,7 +13,7 @@ import type { UserFromGetMe } from 'grammy/types';
 import { config } from '../config.js';
 import { telegramClientOptions, telegramProxyUrl } from '../telegram/client-options.js';
 import { describeTokenCheckFailure } from '../utils/bot-token.js';
-import { exitForConfigError } from '../utils/exit-codes.js';
+import { EXIT_TELEGRAM_UNAVAILABLE, exitForConfigError } from '../utils/exit-codes.js';
 
 /** getMe with the bot's own token and proxy, or exit with a plain-language reason. */
 export async function verifyBotTokenOrExit(): Promise<UserFromGetMe> {
@@ -23,9 +23,9 @@ export async function verifyBotTokenOrExit(): Promise<UserFromGetMe> {
   } catch (err) {
     const failure = describeTokenCheckFailure(err, telegramProxyUrl());
     console.error(`❌ ${failure.message}`);
-    // A rejected token stays rejected; a network failure might not, so it
-    // exits the ordinary way and lets whatever restarts the bot try again.
+    // A rejected token stays rejected; a network failure or a Telegram error
+    // might not, so it exits for whatever restarts the bot to try again.
     if (failure.fatal) exitForConfigError();
-    process.exit(1);
+    process.exit(EXIT_TELEGRAM_UNAVAILABLE);
   }
 }

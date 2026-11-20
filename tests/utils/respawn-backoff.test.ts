@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { planRespawn } from '../../src/utils/respawn-backoff.js';
+import { planOutageRespawn, planRespawn } from '../../src/utils/respawn-backoff.js';
 
 const DELAYS = [1_000, 5_000, 15_000, 60_000] as const;
 const RESET_MS = 300_000;
@@ -41,5 +41,30 @@ describe('planRespawn', () => {
     for (let previous = DELAYS.length; previous < DELAYS.length + 5; previous++) {
       expect(plan(500, previous).delayMs).toBeNull();
     }
+  });
+});
+
+describe('planOutageRespawn', () => {
+  const OUTAGE_DELAYS = [5_000, 15_000, 60_000, 300_000] as const;
+  const outage = (aliveMs: number, previousAttempts: number) =>
+    planOutageRespawn({ aliveMs, previousAttempts, delays: OUTAGE_DELAYS, streakResetMs: RESET_MS });
+
+  it('lengthens the wait while Telegram stays down', () => {
+    expect(outage(16_000, 0)).toEqual({ attempts: 1, delayMs: 5_000 });
+    expect(outage(16_000, 1).delayMs).toBe(15_000);
+    expect(outage(16_000, 2).delayMs).toBe(60_000);
+    expect(outage(16_000, 3).delayMs).toBe(300_000);
+  });
+
+  it('never gives up, repeating the last wait', () => {
+    // The failure this guards: a few minutes of 502s outlasted the crash
+    // retries, and the bot stayed offline until the launcher was restarted.
+    for (let previous = OUTAGE_DELAYS.length; previous < OUTAGE_DELAYS.length + 50; previous++) {
+      expect(outage(16_000, previous).delayMs).toBe(300_000);
+    }
+  });
+
+  it('starts the waits over for an instance that stayed up', () => {
+    expect(outage(RESET_MS, 7)).toEqual({ attempts: 1, delayMs: 5_000 });
   });
 });

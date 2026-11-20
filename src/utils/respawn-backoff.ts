@@ -40,3 +40,29 @@ export function planRespawn({
   const streak = aliveMs >= streakResetMs ? 1 : previousStreak + 1;
   return { streak, delayMs: delays[streak - 1] ?? null };
 }
+
+export interface OutageRespawnInput {
+  /** How long the instance stayed up before exiting. */
+  aliveMs: number;
+  /** Outage respawns in a row before this one. */
+  previousAttempts: number;
+  /** The waits to go through; the last one repeats for as long as it takes. */
+  delays: readonly number[];
+  /** An instance that stayed up at least this long starts the waits over. */
+  streakResetMs: number;
+}
+
+/**
+ * How long to wait before respawning an instance that exited because Telegram
+ * couldn't be reached. Unlike a crash this never gives up: an outage ends on
+ * its own, and the bot should be back when it does.
+ */
+export function planOutageRespawn({
+  aliveMs,
+  previousAttempts,
+  delays,
+  streakResetMs,
+}: OutageRespawnInput): { attempts: number; delayMs: number } {
+  const attempts = aliveMs >= streakResetMs ? 1 : previousAttempts + 1;
+  return { attempts, delayMs: delays[Math.min(attempts, delays.length) - 1] };
+}

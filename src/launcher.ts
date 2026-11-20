@@ -26,14 +26,14 @@ import {
   type ResolvedInstance,
 } from './utils/instance-config.js';
 import { legacyEnv } from './utils/legacy-env.js';
-import { planRespawn } from './utils/respawn-backoff.js';
+import { planOutageRespawn, planRespawn } from './utils/respawn-backoff.js';
 import { tickWasStalled, withinStallCooldown, shouldEscalateWedged } from './utils/host-stall.js';
 import { fingerprintModuleGraph, launcherHasChanged } from './utils/stale-launcher.js';
 import { PrefsRelay } from './utils/prefs-relay.js';
 import { IdleRestart } from './utils/idle-restart.js';
 import { configFile } from './utils/config-home.js';
 import { PACKAGE_ROOT, isCheckout } from './utils/install-mode.js';
-import { EXIT_CONFIG, configErrorExitCode } from './utils/exit-codes.js';
+import { EXIT_CONFIG, EXIT_TELEGRAM_UNAVAILABLE, configErrorExitCode } from './utils/exit-codes.js';
 
 const projectRoot = PACKAGE_ROOT;
 
@@ -88,6 +88,11 @@ const CRASH_RESPAWN_DELAYS_MS = [1_000, 5_000, 15_000, 60_000];
 // this long before dying starts its retry budget over, so two unrelated crashes
 // days apart don't add up to a give-up.
 const CRASH_STREAK_RESET_MS = 300_000;
+// A bot that exits because Telegram didn't answer (EXIT_TELEGRAM_UNAVAILABLE)
+// isn't crashing, and an outage can outlast every crash delay above: a few
+// minutes of 502s once left a bot given up on until the launcher restarted.
+// These respawns never give up; the last wait repeats until Telegram is back.
+const OUTAGE_RESPAWN_DELAYS_MS = [5_000, 15_000, 60_000, 300_000];
 
 // How often the launcher looks at instances.json for edits, and how long it
 // lets an edit settle before reading it: an editor or a script can take more
@@ -174,6 +179,8 @@ const restarters = new Map<string, () => void>();
 // decide when to stop trying. Reset by a planned restart or by an instance that
 // stayed up longer than CRASH_STREAK_RESET_MS.
 const crashStreaks = new Map<string, number>();
+// The same for exits on a Telegram outage, which only pick a delay.
+const outageStreaks = new Map<string, number>();
 // Instances waiting out a respawn backoff. They have no entry in `workers`
 // during the gap, so without this the "everything's gone" check below would
 // fire mid-backoff and take the launcher down with it.
@@ -763,6 +770,7 @@ function spawnWorker(inst: ResolvedInstance): Worker {
       // Planned restart — respawn after a short delay
       pendingRestarts.delete(inst.name);
       crashStreaks.delete(inst.name);
+      outageStreaks.delete(inst.name);
       console.log(`[Launcher] Respawning ${inst.name} in 1s...`);
       scheduleRespawn(inst, 1000);
       return;
@@ -773,6 +781,7 @@ function spawnWorker(inst: ResolvedInstance): Worker {
     // itself. Respawning would print the same thing four times over.
     if (code === EXIT_CONFIG) {
       crashStreaks.delete(inst.name);
+      outageStreaks.delete(inst.name);
       console.error(
         `[Launcher] ${inst.name} stopped on a configuration problem (its message is above) — not restarting it. ` +
         `Fix its entry in ${path.basename(configPath)} and it starts again; for a fix in .env, restart the launcher.`
@@ -784,11 +793,28 @@ function spawnWorker(inst: ResolvedInstance): Worker {
       return;
     }
 
+    const aliveMs = Date.now() - spawnedAt;
+
+    // Telegram didn't answer, and the bot has said how. Not a crash: try again
+    // for as long as the outage lasts, without touching the crash streak.
+    if (code === EXIT_TELEGRAM_UNAVAILABLE) {
+      const { attempts, delayMs } = planOutageRespawn({
+        aliveMs,
+        previousAttempts: outageStreaks.get(inst.name) ?? 0,
+        delays: OUTAGE_RESPAWN_DELAYS_MS,
+        streakResetMs: CRASH_STREAK_RESET_MS,
+      });
+      outageStreaks.set(inst.name, attempts);
+      console.warn(`[Launcher] ${inst.name} couldn't reach Telegram (its message is above) — trying again in ${Math.round(delayMs / 1000)}s (attempt ${attempts})`);
+      scheduleRespawn(inst, delayMs);
+      return;
+    }
+    outageStreaks.delete(inst.name);
+
     // Unplanned exit. Whatever took it down — a fatal error, a 409 from a
     // predecessor's long poll that hadn't been dropped yet — this bot is now
     // silently offline and nothing else will notice, because the heartbeat
     // monitor only watches instances that still have a worker. Respawn it.
-    const aliveMs = Date.now() - spawnedAt;
     const { streak, delayMs: delay } = planRespawn({
       aliveMs,
       previousStreak: crashStreaks.get(inst.name) ?? 0,
@@ -870,12 +896,15 @@ function applyConfigChange(): void {
       console.log(`[Launcher] ${from.name}'s entry in ${file} changed — starting it again${renamed}`);
       crashStreaks.delete(from.name);
       crashStreaks.delete(to.name);
+      outageStreaks.delete(from.name);
+      outageStreaks.delete(to.name);
       startWhenNameIsFree(to);
     }
   }
 
   for (const inst of added) {
     crashStreaks.delete(inst.name);
+    outageStreaks.delete(inst.name);
     const now = startWhenNameIsFree(inst);
     console.log(`[Launcher] ${inst.name} was added to ${file} — ${now ? 'starting it' : 'it starts once its name is free'}`);
   }

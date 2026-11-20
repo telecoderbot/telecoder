@@ -14,6 +14,18 @@ import { isMainThread } from 'worker_threads';
 export const EXIT_CONFIG = 78;
 
 /**
+ * The exit code a bot uses when Telegram itself is the problem: the startup
+ * getMe or the heartbeat couldn't get an answer (a 502, a timeout, no
+ * network). 69 is EX_UNAVAILABLE from sysexits.h.
+ *
+ * The launcher reads it as "try again later" rather than as a crash: an
+ * outage can outlast every crash retry, and a bot given up on during one
+ * stayed offline until someone restarted the launcher. Anything else that
+ * restarts the bot sees an ordinary non-zero exit.
+ */
+export const EXIT_TELEGRAM_UNAVAILABLE = 69;
+
+/**
  * Set in the environment by the units `telecoder service install` writes, so
  * the bot knows which service manager answers its exit code.
  */

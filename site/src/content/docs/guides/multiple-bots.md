@@ -31,6 +31,11 @@ starts; take one out and it stops; change a bot's token or settings and only tha
 restarts, picking its sessions back up. The rest carry on. A file that doesn't parse, or
 lists no bots, is ignored until it's fixed, so a half-saved edit takes nothing down.
 
+A bot that crashes is started again after 1, 5, 15 and 60 seconds; after a fifth crash in
+a row the launcher gives up on it until its entry changes or the launcher restarts. A bot
+that exits because Telegram didn't answer isn't counted as crashing: it is started again
+after 5, 15 and 60 seconds and then every five minutes, for as long as the outage lasts.
+
 A bot can also create bots, so a new one for a project costs a tap rather than a
 BotFather chat. Turn on Bot Management Mode for one bot in [@BotFather](https://t.me/BotFather)'s
 Mini App, then send it `/newbot <project>`, or ask Claude for a bot for a project in
