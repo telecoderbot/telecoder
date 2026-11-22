@@ -2489,6 +2489,14 @@
             <code>claude</code> is ended after an hour, so deleted threads leave nothing running.</p>
           </div>
           <div class="feature-card" data-category="sessions">
+            <div class="feature-icon"><svg><use href="#i-thread"/></svg></div>
+            <h3>Spring cleaning</h3>
+            <p><code>/cleanup</code> lists a chat's idle threads to tick and deletes them in one
+            go. Threads with work still going are left off, Haiku leaves the ones with loose ends
+            unticked, and <code>/keep</code> keeps a thread off the list for good, with a 📌 on its
+            name.</p>
+          </div>
+          <div class="feature-card" data-category="sessions">
             <div class="feature-icon"><svg><use href="#i-tree"/></svg></div>
             <h3>Find your way back through forks</h3>
             <p><code>/tree</code> draws every branch of a forked conversation in one message
@@ -3101,6 +3109,14 @@ CCR_AUTOSTART=true</pre>
             <div class="command-row">
               <code class="command-code">/deletethread</code>
               <span class="command-desc">Delete the thread it's sent in, with all its messages, and end its session — works mid-turn. The conversation stays in <code>/resume</code>. <code>-y</code> skips the confirmation</span>
+            </div>
+            <div class="command-row">
+              <code class="command-code">/cleanup [7d]</code>
+              <span class="command-desc">List this chat's threads idle for 2 days or more (or the time given) to tick and delete in one go. Kept and busy threads are left off, and Haiku leaves the ones with loose ends unticked. Private chats only</span>
+            </div>
+            <div class="command-row">
+              <code class="command-code">/keep [off]</code>
+              <span class="command-desc">Keep the thread it's sent in out of <code>/cleanup</code>, with a 📌 in front of its name. <code>off</code> undoes it</span>
             </div>
             <div class="command-row">
               <code class="command-code">/tree</code>

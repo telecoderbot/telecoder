@@ -23,6 +23,8 @@ Every command TeleCoder registers. `/commands` lists them in Telegram, and Teleg
 | `/fork` | Fork the conversation — into a new thread on a bot with threads, otherwise a new branch on this bot or a hand-off to a sibling bot |
 | `/spinoff <task>` | Split a task off into a new thread, with the context compacted around it and the task as its first prompt. As a reply, it forks from that message. Needs threads |
 | `/deletethread [-y]` | Delete the thread it's sent in, with all its messages, and end its session; works mid-turn. The conversation stays in `/resume`. In a group, the bot needs the right to delete messages — admin-only |
+| `/cleanup [12h\|7d\|2w\|0]` | List this private chat's threads idle for 2 days or more (or the time given) to tick and delete in one go. Kept threads, busy ones and this one are left off; Haiku leaves threads with loose ends unticked. The conversations stay in `/resume` — admin-only |
+| `/keep [off]` | Keep the thread it's sent in out of `/cleanup`, with a 📌 in front of its name; `off` undoes it |
 | `/tree` | Draw the conversation's fork tree; tap a point to carry on that branch or branch from it, in this chat. A branch from another chat or bot carries on as a copy |
 | `/accept` | Accept a pending fork from another bot |
 | `/decline` | Discard a pending fork without loading it |

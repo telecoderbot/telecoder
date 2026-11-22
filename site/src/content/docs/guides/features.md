@@ -55,6 +55,9 @@ Everything TeleCoder does, by area. Commands are listed in full in [Commands](..
 - `/deletethread` deletes a thread and ends its session. A thread deleted by hand is noticed
   the first time something is sent into it, and an idle PTY session's `claude` is ended after
   an hour either way
+- `/cleanup` deletes a private chat's idle threads in one go. It lists them to tick, leaves
+  alone any with work still going, and Haiku leaves the ones with loose ends unticked.
+  `/keep` keeps a thread off the list, with a 📌 in front of its name
 - Claude Code starts as soon as the conversation is chosen, with `/project`, `/clear` or
   `/resume`, so the first message doesn't wait for it to start. Skipped when memory is
   short, and `PREWARM_CLAUDE=false` turns it off

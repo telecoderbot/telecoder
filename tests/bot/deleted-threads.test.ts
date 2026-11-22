@@ -16,13 +16,15 @@ vi.mock('../../src/providers/provider-router.js', () => ({ clearConversation }))
 const clearSession = vi.fn();
 vi.mock('../../src/claude/session-manager.js', () => ({ sessionManager: { clearSession } }));
 const forgetThreadTitle = vi.fn();
-vi.mock('../../src/telegram/thread-titles.js', () => ({ forgetThreadTitle }));
+const markThreadName = vi.fn(async (_key: string, _mark: string, _on: boolean) => 'renamed');
+vi.mock('../../src/telegram/thread-titles.js', () => ({ forgetThreadTitle, markThreadName }));
 const forgetPrefs = vi.fn();
 vi.mock('../../src/providers/user-preferences.js', () => ({ userPreferences: { forgetThread: forgetPrefs } }));
 
 const { forgetThread, isThreadGoneError, watchForDeletedThreads, resetDeletedThreadsForTest } =
   await import('../../src/bot/deleted-threads.js');
-const { handleDeleteThread, handleDeleteThreadCallback } = await import('../../src/bot/handlers/command/thread.js');
+const { handleDeleteThread, handleDeleteThreadCallback, handleKeep } = await import('../../src/bot/handlers/command/thread.js');
+const { isThreadKept, setThreadKept, resetKeptThreadsForTest } = await import('../../src/bot/kept-threads.js');
 
 const CHAT = 37620077;
 const THREAD = 4242;
@@ -36,6 +38,7 @@ function letGo(): boolean {
 beforeEach(() => {
   vi.clearAllMocks();
   resetDeletedThreadsForTest();
+  resetKeptThreadsForTest();
 });
 
 describe('isThreadGoneError', () => {
@@ -70,6 +73,20 @@ describe('forgetThread', () => {
   it('never touches a chat itself, only its threads', async () => {
     expect(await forgetThread(api, String(CHAT), 'test')).toBe(false);
     expect(clearConversation).not.toHaveBeenCalled();
+  });
+
+  it('drops the thread\'s keep mark', async () => {
+    setThreadKept(KEY, true);
+    await forgetThread(api, KEY, 'test');
+    expect(isThreadKept(KEY)).toBe(false);
+  });
+
+  it('remembers what it let go across a restart', async () => {
+    await forgetThread(api, KEY, 'test');
+    vi.resetModules();
+    const fresh = await import('../../src/bot/deleted-threads.js');
+    expect(fresh.isThreadForgotten(KEY)).toBe(true);
+    expect(fresh.isThreadForgotten(`${CHAT}:9999`)).toBe(false);
   });
 
   it('still lets go when stopping the turn fails', async () => {
@@ -175,5 +192,55 @@ describe('/deletethread', () => {
     await handleDeleteThreadCallback(ctx);
     expect(deleteForumTopic).not.toHaveBeenCalled();
     expect(letGo()).toBe(false);
+  });
+});
+
+describe('/keep', () => {
+  function keepCtx(text: string, threadId: number | null = THREAD) {
+    const ctx = {
+      chat: { id: CHAT },
+      message: { message_id: 1, chat: { id: CHAT }, text, is_topic_message: threadId !== null, message_thread_id: threadId ?? undefined },
+      reply: vi.fn(async (_text: string, _other?: unknown) => ({})),
+    };
+    return ctx;
+  }
+  const said = (ctx: ReturnType<typeof keepCtx>) => ctx.reply.mock.calls.at(-1)![0];
+
+  it('keeps the thread and puts the mark on its name', async () => {
+    const ctx = keepCtx('/keep');
+    await handleKeep(ctx as unknown as Context);
+    expect(isThreadKept(KEY)).toBe(true);
+    expect(markThreadName).toHaveBeenCalledWith(KEY, '📌 ', true);
+    expect(said(ctx)).toContain('Kept.');
+  });
+
+  it('says so when the thread is already kept', async () => {
+    setThreadKept(KEY, true);
+    const ctx = keepCtx('/keep');
+    await handleKeep(ctx as unknown as Context);
+    expect(said(ctx)).toContain('already kept');
+    expect(markThreadName).not.toHaveBeenCalled();
+  });
+
+  it('takes the mark off with /keep off', async () => {
+    setThreadKept(KEY, true);
+    const ctx = keepCtx('/keep off');
+    await handleKeep(ctx as unknown as Context);
+    expect(isThreadKept(KEY)).toBe(false);
+    expect(markThreadName).toHaveBeenCalledWith(KEY, '📌 ', false);
+  });
+
+  it('tells a user-named thread its name stays as it is', async () => {
+    markThreadName.mockResolvedValueOnce('user-named');
+    const ctx = keepCtx('/keep');
+    await handleKeep(ctx as unknown as Context);
+    expect(said(ctx)).toContain('stays as it is');
+  });
+
+  it('asks to be sent inside a thread', async () => {
+    const ctx = keepCtx('/keep', null);
+    await handleKeep(ctx as unknown as Context);
+    expect(said(ctx)).toContain('inside the thread');
+    expect(isThreadKept(String(CHAT))).toBe(false);
   });
 });

@@ -179,4 +179,56 @@ describe('thread titles', () => {
     expect(t.threadName('Fork tree · Labels', '🍴 ', 'telecoder')).toBe('🍴 telecoder · Fork tree');
     expect(t.threadName('', '🍴 ', 'telecoder')).toBe('🍴 telecoder');
   });
+
+  it('puts a keep mark in front of the name at once, and later renames keep it', async () => {
+    vi.useFakeTimers();
+    const t = await load();
+    t.syncThreadTitle(KEY, 'Thread naming');
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Inside the cooldown, and still renamed now: it's what was asked for.
+    expect(await t.markThreadName(KEY, '📌 ', true)).toBe('renamed');
+    expect(t.editForumTopic).toHaveBeenLastCalledWith(CHAT, THREAD, { name: '📌 Thread naming' });
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    t.syncThreadTitle(KEY, 'Cleanup · Buttons');
+    expect(t.editForumTopic).toHaveBeenLastCalledWith(CHAT, THREAD, { name: '📌 Cleanup' });
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(await t.markThreadName(KEY, '📌 ', false)).toBe('renamed');
+    expect(t.editForumTopic).toHaveBeenLastCalledWith(CHAT, THREAD, { name: 'Cleanup' });
+  });
+
+  it("puts the keep mark next to a fork's prefix", async () => {
+    const t = await load();
+    t.adoptThread(KEY, '🍴 Thread naming', '🍴 ');
+
+    await t.markThreadName(KEY, '📌 ', true);
+    expect(t.editForumTopic).toHaveBeenLastCalledWith(CHAT, THREAD, { name: '📌 🍴 Thread naming' });
+
+    await t.markThreadName(KEY, '📌 ', false);
+    expect(t.editForumTopic).toHaveBeenLastCalledWith(CHAT, THREAD, { name: '🍴 Thread naming' });
+  });
+
+  it('sends a held rename with the mark rather than after it', async () => {
+    vi.useFakeTimers();
+    const t = await load();
+    t.syncThreadTitle(KEY, 'First');
+    await vi.advanceTimersByTimeAsync(0);
+    t.syncThreadTitle(KEY, 'Second');
+
+    await t.markThreadName(KEY, '📌 ', true);
+    expect(t.editForumTopic).toHaveBeenLastCalledWith(CHAT, THREAD, { name: '📌 Second' });
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(t.editForumTopic).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves a name the user gave alone when marking", async () => {
+    const t = await load();
+    await t.feed({ forum_topic_edited: { name: 'Mine' } });
+
+    expect(await t.markThreadName(KEY, '📌 ', true)).toBe('user-named');
+    expect(t.editForumTopic).not.toHaveBeenCalled();
+  });
 });

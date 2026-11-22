@@ -466,6 +466,22 @@ function turnRunning(sessionKey: SessionKey): boolean {
 }
 
 /**
+ * What the session still has going on that deleting its thread would lose: a
+ * turn, a message on its way or waiting for one, or one set aside with
+ * /later. Undefined when there's none of that.
+ */
+export function pendingWork(sessionKey: SessionKey): 'working' | 'messages waiting' | 'message set aside' | undefined {
+  if (inFlight.has(sessionKey) || turnRunning(sessionKey)) return 'working';
+  for (const entry of queued.values()) {
+    if (entry.sessionKey === sessionKey && !entry.takenBack && !entry.parked) return 'messages waiting';
+  }
+  for (const message of parked.values()) {
+    if (message.sessionKey === sessionKey) return 'message set aside';
+  }
+  return undefined;
+}
+
+/**
  * Whether the session has nothing left that would change the answer the question
  * is about. Background tasks don't count: they can run for hours with the session
  * free, and if one reports back, a question already asked still stands.

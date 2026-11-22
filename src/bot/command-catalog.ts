@@ -46,6 +46,8 @@ export function buildCommandMenu(): CommandMenuEntry[] {
     { command: 'fork', description: '🍴 Fork this conversation to another bot' },
     { command: 'spinoff', description: '🍴 Split a task off into a new thread' },
     { command: 'deletethread', description: '🗑️ Delete this thread and end its session' },
+    { command: 'cleanup', description: '🧹 Delete idle threads in one go, leaving unfinished work alone' },
+    { command: 'keep', description: '📌 Keep this thread out of /cleanup' },
     { command: 'tree', description: '🌳 Show where this conversation branched, and jump between branches' },
     { command: 'accept', description: '📦 Accept a pending fork from another bot' },
     { command: 'decline', description: '🚫 Discard a pending fork' },

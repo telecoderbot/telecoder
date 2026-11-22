@@ -125,6 +125,36 @@ Only `🍴 Fork`, `/fork` and `/spinoff` open new threads.
 session, stopping a turn that's still running. The conversation stays on disk, so
 `/resume` in any chat can still pick it up. `/deletethread -y` skips the confirmation.
 
+## Spring cleaning
+
+Threads pile up. `/cleanup` deletes the ones you're done with in one go: it lists the
+chat's threads that have been idle for two days or more, oldest first, as buttons to tick,
+and deletes the ticked ones when you tap **🗑️ Delete**. `/cleanup 12h`, `/cleanup 7d` or
+`/cleanup 2w` set the idle time, and `/cleanup 0` lists every idle thread.
+
+Some threads are left off the list, since deleting them could lose something:
+
+- the thread you send `/cleanup` in
+- threads marked with `/keep`
+- a thread with a turn running, messages waiting or a message set aside with `/later`
+- a thread with a background task running or a schedule
+- a thread used more recently than the idle time
+
+Haiku reads the end of each listed thread and guesses whether the work in it is finished.
+A thread where it sees loose ends, like a question you didn't answer or a next step you
+didn't take up, starts unticked and marked ⚠️. It's only a guess, so look the list over
+before you tap **🗑️ Delete**. Every thread is checked again just before it goes, and one
+that has been used since the list went up is kept. Each one is deleted the way
+`/deletethread` does it, so the conversations stay on disk for `/resume`.
+
+`/keep`, sent inside a thread, keeps it off the list for good and puts a 📌 in front of its
+name. A name you gave the thread yourself stays as it is. `/keep off` undoes it.
+
+`/cleanup` works in private chats only. A group's topics are everyone's, so delete those
+one at a time with `/deletethread`.
+
+## Threads deleted by hand
+
 Deleting a thread from Telegram's own menu works too, but Telegram doesn't tell the bot.
 TeleCoder notices the first time it tries to send something into the thread, and ends the
 session then. A thread deleted while idle sends nothing, so its `claude`

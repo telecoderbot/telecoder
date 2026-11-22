@@ -114,7 +114,8 @@ import { trackForceReplyPrompts } from '../telegram/force-reply-tracker.js';
 import { initThreadTitles } from '../telegram/thread-titles.js';
 import { watchForDeletedThreads } from './deleted-threads.js';
 import { startPtyIdleReaper } from '../claude/pty-idle-reaper.js';
-import { handleDeleteThread, handleDeleteThreadCallback } from './handlers/command/thread.js';
+import { handleDeleteThread, handleDeleteThreadCallback, handleKeep } from './handlers/command/thread.js';
+import { handleCleanup, handleCleanupCallback } from './handlers/command/cleanup.js';
 import { initThreadsSetup } from '../telegram/threads-setup.js';
 import { resolvePendingPoll } from '../claude/poll-user.js';
 import { captureSecretMessages, handleSecretCallback } from '../claude/secret-request.js';
@@ -370,6 +371,11 @@ export async function createBot(botInfo?: UserFromGetMe): Promise<Bot> {
   // busy thread can still be deleted. Admin-only: in a group it takes everyone's
   // messages with it.
   cmd('deletethread', adminOnly(handleDeleteThread));
+  // Deletes other threads, never the one it's sent in, and leaves alone any
+  // with a turn or messages going — so it has no reason to wait for this
+  // thread's turn. Admin-only, like /deletethread. /keep only flips a mark.
+  cmd('cleanup', adminOnly(handleCleanup));
+  cmd('keep', handleKeep);
   // Sets an idea aside for after the turn, so it can't wait behind that turn. And
   // with nothing running, it's the one message that doesn't start one.
   cmd('later', withRunningNote(handleLater));
@@ -443,6 +449,7 @@ export async function createBot(botInfo?: UserFromGetMe): Promise<Bot> {
   // tap only re-sends the message, which then waits its turn like any other.
   bot.callbackQuery(/^cmdfix:/, handleCommandFixCallback);
   bot.callbackQuery(/^delthread:/, adminOnly(handleDeleteThreadCallback));
+  bot.callbackQuery(/^cleanup:/, adminOnly(handleCleanupCallback));
   // telecoder_ask_user button taps MUST bypass sequentialize: the agent
   // query is mid-flight and waiting on this exact tap to complete the tool
   // call. If the callback got queued, it'd deadlock behind the query that's

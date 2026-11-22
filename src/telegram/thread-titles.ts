@@ -143,7 +143,9 @@ async function rename(sessionKey: string, name: string): Promise<void> {
   renamesInFlight++;
   try {
     await api.editForumTopic(chatId, threadId!, { name });
-    record(sessionKey, { owner: 'bot', name, ...(current?.prefix ? { prefix: current.prefix } : {}) });
+    // Read again: the prefix may have changed while the call was out.
+    const prefix = state()[sessionKey]?.prefix;
+    record(sessionKey, { owner: 'bot', name, ...(prefix ? { prefix } : {}) });
   } catch (err) {
     console.debug(`[ThreadTitles] Failed to rename ${sessionKey}:`, err instanceof Error ? err.message : err);
   } finally {
@@ -185,6 +187,45 @@ export function syncThreadTitle(sessionKey: string, topic: string, project?: str
   }, wait);
   timer.unref?.();
   pending.set(sessionKey, { name, timer });
+}
+
+/**
+ * Put `mark` in front of the thread's name, or take it off, and rename the
+ * thread now rather than after the cooldown: it's what the user just asked
+ * for. The mark joins the prefix, so every later rename keeps it, next to a
+ * fork's 🍴. A name the user chose is left as it is.
+ *
+ * 'renamed' when the thread now has the name, 'user-named' for a name that's
+ * the user's, 'unnamed' for a thread the bot doesn't name (a group's topic,
+ * one it has never seen a name for) or a rename Telegram refused.
+ */
+export async function markThreadName(
+  sessionKey: string,
+  mark: string,
+  on: boolean,
+): Promise<'renamed' | 'user-named' | 'unnamed'> {
+  const current = state()[sessionKey];
+  if (!api || !isPrivateThread(sessionKey) || !current?.name) return 'unnamed';
+  if (current.owner === 'user') return 'user-named';
+
+  const oldPrefix = current.prefix ?? '';
+  const rest = oldPrefix.startsWith(mark) ? oldPrefix.slice(mark.length) : oldPrefix;
+  const prefix = on ? mark + rest : rest;
+
+  // A rename held for the cooldown carries the newer topic: that one goes now.
+  const held = pending.get(sessionKey);
+  if (held) clearTimeout(held.timer);
+  pending.delete(sessionKey);
+  const latest = held?.name ?? current.name;
+  const base = latest.startsWith(oldPrefix) ? latest.slice(oldPrefix.length) : latest;
+  const name = `${prefix}${base}`.slice(0, MAX_NAME_LENGTH);
+
+  const next: ThreadTitle = { ...current };
+  if (prefix) next.prefix = prefix;
+  else delete next.prefix;
+  record(sessionKey, next);
+  await rename(sessionKey, name);
+  return state()[sessionKey]?.name === name ? 'renamed' : 'unnamed';
 }
 
 /** The thread's name as last seen or set, for naming it in a message. */
