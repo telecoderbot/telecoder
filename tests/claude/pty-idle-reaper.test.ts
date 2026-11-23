@@ -60,13 +60,19 @@ const WORKING = 'output\n✶ Percolating… (29s)\n❯ \n  esc to interrupt\n';
 function makeProvider(opts: { idleFor: number; screen?: string }) {
   const provider = new PtyProvider();
   const internals = provider as unknown as {
-    _getOrCreateSession(key: string): { lastUsedAt: number; lastChunkAt: number };
+    _getOrCreateSession(key: string): { lastUsedAt: number; lastChunkAt: number; screenChangedAt: number };
     _getScreenText(): string;
   };
   const session = internals._getOrCreateSession(KEY);
-  session.lastUsedAt = session.lastChunkAt = Date.now() - opts.idleFor;
-  internals._getScreenText = () => opts.screen ?? AT_THE_PROMPT;
-  return { provider, term: fake.terms[fake.terms.length - 1]! };
+  session.lastUsedAt = session.lastChunkAt = session.screenChangedAt = Date.now() - opts.idleFor;
+  let screen = opts.screen ?? AT_THE_PROMPT;
+  internals._getScreenText = () => screen;
+  return {
+    provider,
+    term: fake.terms[fake.terms.length - 1]!,
+    setScreen: (text: string) => { screen = text; },
+    setOutputAt: (at: number) => { session.lastChunkAt = at; },
+  };
 }
 
 beforeEach(() => {
@@ -93,10 +99,24 @@ describe('endIdleSessions', () => {
     expect(makeProvider({ idleFor: 2 * HOUR }).provider.endIdleSessions(HOUR, () => true)).toEqual([]);
   });
 
-  it('counts output as use, so a long turn just ended is not idle', () => {
-    const { provider } = makeProvider({ idleFor: 2 * HOUR });
-    (provider as unknown as { sessions: Map<string, { lastChunkAt: number }> }).sessions.get(KEY)!.lastChunkAt = Date.now();
+  it('counts a changed screen as use, so a long turn just ended is not idle', () => {
+    const { provider, setScreen } = makeProvider({ idleFor: 2 * HOUR });
+    expect(provider.describeSessions()[0]!.idleMs).toBeGreaterThanOrEqual(2 * HOUR);
+
+    setScreen(`${AT_THE_PROMPT}\nThe migration ran clean.`);
     expect(provider.endIdleSessions(HOUR, () => false)).toEqual([]);
+  });
+
+  it("doesn't count output that leaves the screen as it was", () => {
+    // Claude Code's update check, which evallab's idle claudes ran every half
+    // hour or so for two days: "Checking for updates" in the footer, then
+    // cleared again. Every one of them reset the clock when output counted.
+    const { provider, term, setOutputAt } = makeProvider({ idleFor: 2 * HOUR });
+    expect(provider.describeSessions()[0]!.idleMs).toBeGreaterThanOrEqual(2 * HOUR);
+
+    setOutputAt(Date.now());
+    expect(provider.endIdleSessions(HOUR, () => false)).toEqual([KEY]);
+    expect(term.killed).toBe(true);
   });
 });
 

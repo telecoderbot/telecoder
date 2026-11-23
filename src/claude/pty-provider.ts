@@ -362,8 +362,12 @@ interface PtySession {
    */
   claudeSessionId: string;
   lastChunkAt: number;
-  /** When a turn last picked this session up; with lastChunkAt, how long it has sat idle. */
+  /** When a turn last picked this session up; with screenChangedAt, how long it has sat idle. */
   lastUsedAt: number;
+  /** The screen as _idleMs last saw it; null until it first looks. */
+  screenSeen: string | null;
+  /** When _idleMs last found the screen changed (spawn time until then). */
+  screenChangedAt: number;
   endOfTurnResolver: ((text: string) => void) | null;
   endOfTurnRejector: ((err: Error) => void) | null;
   idleTimer: NodeJS.Timeout | null;
@@ -561,7 +565,7 @@ export class PtyProvider implements Provider {
     const now = Date.now();
     const ended: string[] = [];
     for (const [sessionKey, session] of [...this.sessions]) {
-      if (now - Math.max(session.lastUsedAt, session.lastChunkAt) < maxIdleMs) continue;
+      if (this._idleMs(session, now) < maxIdleMs) continue;
       if (session.endOfTurnResolver || isGenerating(this._getScreenText(session))) continue;
       if (isBusy(sessionKey, session.term.pid)) continue;
       this._cleanupSession(sessionKey);
@@ -584,7 +588,7 @@ export class PtyProvider implements Provider {
     return [...this.sessions].map(([sessionKey, session]) => ({
       sessionKey,
       pid: session.term.pid,
-      idleMs: now - Math.max(session.lastUsedAt, session.lastChunkAt),
+      idleMs: this._idleMs(session, now),
       generating: !!session.endOfTurnResolver || isGenerating(this._getScreenText(session)),
     }));
   }
@@ -1348,6 +1352,8 @@ export class PtyProvider implements Provider {
       claudeSessionId,
       lastChunkAt: Date.now(),
       lastUsedAt: Date.now(),
+      screenSeen: null,
+      screenChangedAt: Date.now(),
       endOfTurnResolver: null,
       endOfTurnRejector: null,
       idleTimer: null,
@@ -2208,6 +2214,22 @@ export class PtyProvider implements Provider {
     if (!session.stream) return;
     clearInterval(session.stream.timer);
     session.stream = null;
+  }
+
+  /**
+   * How long since a turn last picked this session up or its screen last
+   * changed. The screen, not the output: between turns Claude Code still
+   * writes to its terminal — its update check puts "Checking for updates" in
+   * the footer and takes it away again within the second — and with every
+   * byte counted, a claude never sat idle for the hour the reaper waits.
+   * Looked at every sweep, so a change that comes and goes between two looks
+   * doesn't count; one that lasts, like a turn's reply, does.
+   */
+  private _idleMs(session: PtySession, now = Date.now()): number {
+    const screen = this._getScreenText(session);
+    if (session.screenSeen !== null && screen !== session.screenSeen) session.screenChangedAt = now;
+    session.screenSeen = screen;
+    return now - Math.max(session.lastUsedAt, session.screenChangedAt);
   }
 
   private _getScreenText(session: PtySession): string {
