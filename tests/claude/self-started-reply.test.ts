@@ -364,6 +364,29 @@ describe('whether a turn claude started itself is still going', () => {
     await vi.waitFor(() => expect(hasSelfStartedTurn()).toBe(false), WAIT);
   });
 
+  it('is not opened by the summary of a compaction claude made while idle', async () => {
+    // What evallab's log held on 11-21, an hour after its last turn: no turn
+    // follows, so a turn opened here would never close, and /rebuildbot's
+    // "when idle" would wait on it for good.
+    armAndEndTurn();
+    append(
+      { type: 'system', subtype: 'compact_boundary', content: 'Conversation compacted' },
+      {
+        type: 'user',
+        isCompactSummary: true,
+        message: { role: 'user', content: 'This session is being continued from a previous conversation that ran out of context.' },
+      },
+      { type: 'attachment', attachment: { type: 'compact_file_reference' } },
+      { type: 'system', subtype: 'informational', content: 'Compacted while idle, before the prompt cache expired' },
+    );
+    await settleBeforePost(SESSION_KEY);
+    expect(hasSelfStartedTurn()).toBe(false);
+
+    // A record that does start one still opens it.
+    append(completion('toolu_01'));
+    await vi.waitFor(() => expect(hasSelfStartedTurn()).toBe(true), WAIT);
+  });
+
   it('is not, once it has been interrupted, and what it had written still goes out', async () => {
     // An Esc leaves this record and no turn_duration. It is filed as a user
     // record, the very thing that opens a self-started turn.

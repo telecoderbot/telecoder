@@ -554,6 +554,7 @@ function handleChange(state: MonitorState, closes = true): void {
     const typed = rec as {
       type?: string;
       subtype?: string;
+      isCompactSummary?: boolean;
       origin?: { kind?: string };
       message?: { content?: unknown; role?: string };
       attachment?: QueuedCommandAttachment;
@@ -569,6 +570,10 @@ function handleChange(state: MonitorState, closes = true): void {
         }
         continue;
       }
+      // The summary a compaction leaves, filed as a user record too. When
+      // claude compacts an idle session by itself ("Compacted while idle")
+      // no turn follows, so nothing would ever close one opened here.
+      if (typed.isCompactSummary) continue;
       if (!state.inTurn) state.selfTurnOpen = true;
       const notif = parseTaskNotification(typed);
       if (notif) {

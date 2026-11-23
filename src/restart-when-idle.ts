@@ -159,6 +159,9 @@ export function initRestartWhenIdle(api: Api): void {
 
   pp.on('message', (msg: LauncherMessage) => {
     if (msg?.type === 'drain') {
+      // A rebuild while one is still pending: the launcher's new tally starts
+      // out blank, so say again what is holding this worker up.
+      lastReported = null;
       if (timer) return;
       console.log('[IdleRestart] Restart pending — waiting until nothing is left to finish');
       // Not checked straight away: the bot that ran the command is still in
