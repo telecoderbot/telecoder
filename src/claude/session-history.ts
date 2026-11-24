@@ -103,7 +103,8 @@ class SessionHistory {
     projectPath: string,
     lastMessagePreview: string = '',
     claudeSessionId?: string,
-    ownerProvider?: string
+    ownerProvider?: string,
+    { touch = true }: { touch?: boolean } = {},
   ): void {
     if (!this.data.sessions[sessionKey]) {
       this.data.sessions[sessionKey] = [];
@@ -131,7 +132,9 @@ class SessionHistory {
         existingIndex >= 0
           ? history[existingIndex].createdAt
           : new Date().toISOString(),
-      lastActivity: new Date().toISOString(),
+      // A restore isn't use: left to stamp the time, every restart made every
+      // thread restored look just used, and /cleanup never saw one go idle.
+      lastActivity: !touch && existingEntry ? existingEntry.lastActivity : new Date().toISOString(),
     };
 
     // The entry saved is always the conversation the chat is now in — a new

@@ -84,6 +84,30 @@ describe('the history cap', () => {
   });
 });
 
+describe('restoring a conversation after a restart', () => {
+  it('leaves its last-activity time alone, so /cleanup still sees it idle', () => {
+    const key = 'chat-idle:7';
+    converse(key, 'idle');
+    const entry = sessionHistory.getLastSession(key)!;
+    entry.lastActivity = '2026-11-01T10:00:00.000Z';
+    sessionManager.clearSession(key);
+
+    expect(sessionManager.resumeLastSession(key)?.claudeSessionId).toBe('idle');
+    expect(sessionHistory.getLastSession(key)?.lastActivity).toBe('2026-11-01T10:00:00.000Z');
+  });
+
+  it('but going back to one with /resume counts as using it', () => {
+    const key = 'chat-back:7';
+    const older = converse(key, 'older');
+    sessionHistory.getSessionByConversationId(key, older)!.lastActivity = '2026-11-01T10:00:00.000Z';
+    converse(key, 'newer');
+
+    sessionManager.resumeSession(key, older);
+
+    expect(sessionHistory.getLastSession(key)?.lastActivity).not.toBe('2026-11-01T10:00:00.000Z');
+  });
+});
+
 describe('a history file written in creation order', () => {
   it('is read back most recently used first', () => {
     const botId = 'legacy-bot';

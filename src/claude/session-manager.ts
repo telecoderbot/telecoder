@@ -139,7 +139,17 @@ class SessionManager {
     // Note: We don't clear history here - history is for resuming past sessions
   }
 
-  resumeSession(sessionKey: string, conversationId: string): Session | undefined {
+  /**
+   * Make a conversation in history the thread's live one again. `touch: false`
+   * restores it without counting as use, so its last-activity time stays put:
+   * restarts and the restore before a message do that, while going back to a
+   * conversation with /resume moves it on.
+   */
+  resumeSession(
+    sessionKey: string,
+    conversationId: string,
+    { touch = true }: { touch?: boolean } = {},
+  ): Session | undefined {
     const historyEntry = sessionHistory.getSessionByConversationId(sessionKey, conversationId);
     if (!historyEntry) {
       return undefined;
@@ -156,19 +166,23 @@ class SessionManager {
     };
     this.sessions.set(sessionKey, session);
 
-    // Update history activity (with resolved path)
-    sessionHistory.saveSession(sessionKey, conversationId, resolvedPath, historyEntry.lastMessagePreview, historyEntry.claudeSessionId);
+    // Moves it to the front of the history, with the resolved path.
+    sessionHistory.saveSession(
+      sessionKey, conversationId, resolvedPath, historyEntry.lastMessagePreview, historyEntry.claudeSessionId,
+      undefined, { touch },
+    );
 
     return session;
   }
 
+  /** Restore the thread's most recent conversation, without counting that as use. */
   resumeLastSession(sessionKey: string): Session | undefined {
     const lastEntry = sessionHistory.getLastSession(sessionKey);
     if (!lastEntry) {
       return undefined;
     }
 
-    return this.resumeSession(sessionKey, lastEntry.conversationId);
+    return this.resumeSession(sessionKey, lastEntry.conversationId, { touch: false });
   }
 
   /** Return the in-memory session if present; otherwise transparently restore
